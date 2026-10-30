@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { NebulaEngine } from './lib/nebula'
+import { SpiralGalaxyLayer } from './lib/spiral-galaxy'
 
 type Idea = {
   id: number
@@ -46,6 +47,7 @@ function random(min: number, max: number) {
 const ideas = ref<Idea[]>(loadIdeas())
 const shell = ref<HTMLElement | null>(null)
 const canvas = ref<HTMLCanvasElement | null>(null)
+const galaxyCanvas = ref<HTMLCanvasElement | null>(null)
 const worldEl = ref<HTMLElement | null>(null)
 const parallaxEl = ref<HTMLElement | null>(null)
 
@@ -74,6 +76,7 @@ const encounterIdeas = computed(() => {
 })
 
 let engine: NebulaEngine | null = null
+let galaxyLayer: SpiralGalaxyLayer | null = null
 let toastTimer: number | undefined
 let encounterTimer: number | undefined
 const bornTimers = new Map<number, number>()
@@ -360,9 +363,26 @@ watch(ideas, (value) => {
 
 watch(motionEnabled, (value) => {
   engine?.setMotionEnabled(value)
+  galaxyLayer?.setMotionEnabled(value)
+})
+
+// 任何弹窗打开时暂停两个画布动画，避免 backdrop-filter / 重排与动画争抢
+const anyModalOpen = computed(() => composerOpen.value || encounterOpen.value || Boolean(activeIdea.value))
+watch(anyModalOpen, (open) => {
+  if (open) {
+    engine?.setMotionEnabled(false)
+    galaxyLayer?.setMotionEnabled(false)
+  } else {
+    engine?.setMotionEnabled(motionEnabled.value)
+    galaxyLayer?.setMotionEnabled(motionEnabled.value)
+  }
 })
 
 onMounted(() => {
+    if (galaxyCanvas.value && shell.value) {
+    galaxyLayer = new SpiralGalaxyLayer(galaxyCanvas.value, shell.value)
+    galaxyLayer.start()
+  }
   if (canvas.value && shell.value && worldEl.value) {
     engine = new NebulaEngine(canvas.value)
     engine.mount(shell.value, worldEl.value, parallaxEl.value)
@@ -394,6 +414,8 @@ onBeforeUnmount(() => {
   if (encounterTimer) window.clearTimeout(encounterTimer)
   bornTimers.forEach((timer) => window.clearTimeout(timer))
   bornTimers.clear()
+  galaxyLayer?.dispose()
+  galaxyLayer = null
   engine?.dispose()
   engine = null
 })
@@ -416,6 +438,7 @@ onBeforeUnmount(() => {
         <div class="nebula-haze haze-one"></div>
         <div class="nebula-haze haze-two"></div>
       </div>
+      <canvas ref="galaxyCanvas" class="galaxy-canvas" aria-hidden="true"></canvas>
       <div class="cosmic-vignette"></div>
       <canvas ref="canvas" class="particle-canvas"></canvas>
       <div class="cosmic-grain"></div>

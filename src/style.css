@@ -71,12 +71,9 @@ textarea:focus-visible {
   pointer-events: none;
 }
 
-/* 指针视差层：整片星云雾随鼠标轻微浮动 */
+/* 指针视差层：已由 Canvas 接管星云绘制，此层隐藏 */
 .nebula-parallax {
-  position: absolute;
-  inset: -8%;
-  transform: translate3d(var(--px, 0px), var(--py, 0px), 0);
-  will-change: transform;
+  display: none;
 }
 
 .nebula-cloud {
@@ -153,13 +150,9 @@ textarea:focus-visible {
   pointer-events: none;
 }
 
+/* 颗粒层已由 Canvas 接管，隐藏以消除全屏混合开销 */
 .cosmic-grain {
-  position: absolute;
-  inset: 0;
-  opacity: 0.22;
-  mix-blend-mode: soft-light;
-  pointer-events: none;
-  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 180 180' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.88' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.22'/%3E%3C/svg%3E");
+  display: none;
 }
 
 /* ============================================================ 顶栏 */
@@ -174,8 +167,7 @@ textarea:focus-visible {
   gap: 24px;
   padding: 0 clamp(22px, 4vw, 68px);
   border-bottom: 1px solid rgba(197, 193, 255, 0.07);
-  background: linear-gradient(180deg, rgba(6, 7, 18, 0.62) 0%, rgba(6, 7, 18, 0.12) 62%, transparent 100%);
-  backdrop-filter: blur(16px) saturate(120%);
+  background: linear-gradient(180deg, rgba(6, 7, 18, 0.92) 0%, rgba(6, 7, 18, 0.6) 62%, rgba(6, 7, 18, 0) 100%);
 }
 
 .brand {
@@ -375,7 +367,6 @@ textarea:focus-visible {
   border-radius: 50%;
   transform: translate(-50%, -50%);
   background: radial-gradient(circle, color-mix(in srgb, var(--node-color), transparent 52%) 0%, color-mix(in srgb, var(--node-color), transparent 84%) 44%, transparent 74%);
-  filter: blur(1px);
   animation: aura-breathe 4.4s ease-in-out var(--node-delay) infinite;
 }
 
@@ -415,7 +406,7 @@ textarea:focus-visible {
 .idea-node.is-near .node-ring { opacity: 0.42; }
 .idea-node.is-near .node-core { animation-duration: 2.4s; }
 
-.focus-mode .idea-node:not(.is-focused) { opacity: 0.26; filter: saturate(0.7); }
+.focus-mode .idea-node:not(.is-focused) { opacity: 0.22; }
 .focus-mode .idea-node:not(.is-focused) .node-label { opacity: 0; }
 
 /* 新光点凝聚点亮 */
@@ -543,8 +534,7 @@ textarea:focus-visible {
   padding: 3px;
   border: 1px solid rgba(196, 188, 255, 0.14);
   border-radius: 999px;
-  background: rgba(10, 11, 28, 0.55);
-  backdrop-filter: blur(16px);
+  background: rgba(10, 11, 28, 0.82);
   box-shadow: 0 10px 30px -18px rgba(0, 0, 0, 0.9);
 }
 .hud-button {
@@ -711,8 +701,7 @@ textarea:focus-visible {
   display: grid;
   place-items: center;
   padding: 22px;
-  background: rgba(3, 4, 14, 0.62);
-  backdrop-filter: blur(20px) saturate(120%);
+  background: rgba(3, 4, 14, 0.74);
 }
 
 .glass-modal {
@@ -727,7 +716,6 @@ textarea:focus-visible {
     0 0 60px -20px rgba(119, 86, 240, 0.18),
     inset 0 1px 0 rgba(255, 255, 255, 0.07),
     inset 0 -30px 60px -40px rgba(110, 180, 255, 0.25);
-  backdrop-filter: blur(30px) saturate(135%);
 }
 
 /* 棱镜描边：玻璃边缘折射出的一点色散 */
@@ -1053,8 +1041,8 @@ textarea:focus-visible {
   to { opacity: 0.3; transform: scale(1.1) translate3d(3%, -3%, 0); }
 }
 @keyframes core-breathe {
-  0%, 100% { filter: brightness(0.94); }
-  50% { filter: brightness(1.12); }
+  0%, 100% { opacity: 0.86; }
+  50% { opacity: 1; }
 }
 @keyframes aura-breathe {
   0%, 100% { opacity: 0.48; transform: translate(-50%, -50%) scale(0.84); }
@@ -1066,8 +1054,8 @@ textarea:focus-visible {
   100% { transform: translate(-50%, -50%) scale(1.5); opacity: 0; }
 }
 @keyframes encounter-glow {
-  from { filter: brightness(1); }
-  to { filter: brightness(1.7); }
+  from { opacity: 0.85; }
+  to { opacity: 1; }
 }
 @keyframes side-orbit {
   from { transform: rotate(-18deg); }
@@ -1078,8 +1066,8 @@ textarea:focus-visible {
   to { opacity: 1; transform: translateY(0); }
 }
 @keyframes symbol-breathe {
-  0%, 100% { transform: scale(1); filter: brightness(1); }
-  50% { transform: scale(1.07); filter: brightness(1.28); }
+  0%, 100% { transform: scale(1); opacity: 0.8; }
+  50% { transform: scale(1.07); opacity: 1; }
 }
 @keyframes dot-pulse {
   0%, 100% { opacity: 0.55; box-shadow: 0 0 8px #9d8bff; }

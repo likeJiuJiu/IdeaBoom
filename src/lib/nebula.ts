@@ -194,6 +194,7 @@ export class NebulaEngine {
   private sparks: Spark[] = []
   private comets: Comet[] = []
   private guide: Guide | null = null
+  private cloudSprites: { canvas: HTMLCanvasElement; x: number; y: number; driftX: number; driftY: number; phase: number }[] = []
 
   private ideas: NebulaIdea[] = []
   private nodeEls = new Map<number, HTMLElement>()
@@ -285,11 +286,35 @@ export class NebulaEngine {
 
   setFocus(id: number | null): void {
     this.focusId = id
+    this.start()
   }
 
   setMotionEnabled(enabled: boolean): void {
     this.motion = enabled && !this.reduced
-    if (this.motion) this.start()
+    if (this.motion) {
+      this.start()
+    } else {
+      // 暂停：清空进行中的特效，归零光点偏移，渲染一帧静态画面后循环自行停止
+      this.ripples = []
+      this.sparks = []
+      this.comets = []
+      this.guide = null
+      this.resetNodeOffsets()
+      this.start()
+    }
+  }
+
+  /** 把所有光点的引力偏移 / 靠近态归零，暂停时调用避免残留 */
+  private resetNodeOffsets(): void {
+    for (const el of this.nodeEls.values()) {
+      el.style.setProperty('--gx', '0px')
+      el.style.setProperty('--gy', '0px')
+      if (el.dataset.near === '1') {
+        el.dataset.near = '0'
+        el.classList.remove('is-near')
+      }
+    }
+    this.offsets.clear()
   }
 
   // -------------------------------------------------------------- 坐标转换
@@ -317,11 +342,13 @@ export class NebulaEngine {
   }
 
   beginPan(sx: number, sy: number): void {
+    this.start()
     this.panState = { sx, sy, cx: this.camTarget.x, cy: this.camTarget.y }
     this.panVel = { x: 0, y: 0 }
   }
 
   panTo(sx: number, sy: number): void {
+    this.start()
     if (!this.panState) return
     const zoom = this.camTarget.zoom
     const nx = this.panState.cx - (sx - this.panState.sx) / zoom
@@ -342,6 +369,7 @@ export class NebulaEngine {
 
   /** 以屏幕某点为锚点缩放，滚轮与双指都走这条路径 */
   zoomAt(sx: number, sy: number, factor: number): void {
+    this.start()
     const anchor = this.screenToWorld(sx, sy)
     const zoom = clamp(this.camTarget.zoom * factor, this.minZoom, 2.4)
     if (Math.abs(zoom - this.camTarget.zoom) < 0.0005) return
@@ -356,6 +384,7 @@ export class NebulaEngine {
   }
 
   resetView(): void {
+    this.start()
     this.camTarget.zoom = 1
     this.camTarget.x = this.worldW / 2
     this.camTarget.y = this.worldH / 2
@@ -373,7 +402,7 @@ export class NebulaEngine {
     } else if (this.pointerSmooth.x < -5000) {
       this.pointerSmooth.x = x
       this.pointerSmooth.y = y
-      this.trail = Array.from({ length: 14 }, () => ({ x, y }))
+      this.trail = Array.from({ length: 8 }, () => ({ x, y }))
     }
   }
 
@@ -396,6 +425,7 @@ export class NebulaEngine {
   spawn(id: number): void {
     const idea = this.ideas.find((item) => item.id === id)
     if (!idea) return
+    this.start()
     const to = this.worldOf(idea)
     const from = this.screenToWorld(this.viewW / 2, this.viewH * 0.72)
     const mx = (from.x + to.x) / 2
@@ -417,6 +447,7 @@ export class NebulaEngine {
     const a = this.ideas.find((item) => item.id === aId)
     const b = this.ideas.find((item) => item.id === bId)
     if (!a || !b) return
+    this.start()
     const pa = this.worldOf(a)
     const pb = this.worldOf(b)
     this.guide = {
@@ -458,7 +489,7 @@ export class NebulaEngine {
     const rect = this.stage.getBoundingClientRect()
     const viewW = Math.max(1, Math.round(rect.width))
     const viewH = Math.max(1, Math.round(rect.height))
-    const dpr = Math.min(2, window.devicePixelRatio || 1)
+    const dpr = Math.min(1.5, window.devicePixelRatio || 1)
     const prevW = this.worldW || viewW
     const prevH = this.worldH || viewH
 
@@ -499,6 +530,7 @@ export class NebulaEngine {
       }
     }
     this.buildFilaments()
+    this.buildClouds()
 
     if (this.worldEl) {
       this.worldEl.style.width = `${this.worldW}px`
@@ -508,8 +540,8 @@ export class NebulaEngine {
   }
 
   private buildStars(): void {
-    const quality = this.lowPower ? 0.62 : 1
-    const count = Math.round(clamp((this.viewW * this.viewH) / 6800, 90, 300) * quality)
+    const quality = this.lowPower ? 0.55 : 1
+    const count = Math.round(clamp((this.viewW * this.viewH) / 11000, 60, 160) * quality)
     this.stars = []
     for (let i = 0; i < count; i += 1) {
       const layer = i % 3
@@ -537,7 +569,7 @@ export class NebulaEngine {
       this.filamentGradients = []
       return
     }
-    const count = 6
+    const count = 4
     this.filaments = []
     for (let i = 0; i < count; i += 1) {
       this.filaments.push({
@@ -564,16 +596,90 @@ export class NebulaEngine {
     })
   }
 
-  // ---------------------------------------------------------------- 主循环
+  /**
+   * 预渲染星云云层到离屏 Canvas。
+   * 原先用 DOM + filter:blur + mix-blend-mode 实现，每帧都要对全屏重新混合，
+   * 现在只在 resize 时画一次，运行时仅 drawImage，开销极低。
+   */
+  private buildClouds(): void {
+    const clouds = [
+      { w: 0.62, h: 0.42, x: 0.38, y: 0.22, blur: 74, color: 'rgba(78, 52, 176, 0.5)', color2: 'rgba(46, 56, 152, 0.26)', drift: 0.15 },
+      { w: 0.50, h: 0.36, x: 0.56, y: 0.40, blur: 70, color: 'rgba(38, 116, 186, 0.34)', color2: 'rgba(86, 56, 168, 0.22)', drift: 0.12 },
+      { w: 0.46, h: 0.32, x: 0.30, y: 0.62, blur: 66, color: 'rgba(108, 52, 178, 0.32)', color2: 'rgba(30, 36, 112, 0.16)', drift: 0.10 },
+      { w: 0.38, h: 0.26, x: 0.62, y: 0.12, blur: 60, color: 'rgba(70, 154, 196, 0.32)', color2: 'rgba(70, 154, 196, 0.06)', drift: 0.08 },
+      { w: 0.34, h: 0.18, x: 0.58, y: 0.72, blur: 60, color: 'rgba(78, 196, 214, 0.28)', color2: 'rgba(78, 196, 214, 0.05)', drift: 0.06 },
+    ]
+    this.cloudSprites = clouds.map((c) => {
+      const cw = Math.max(1, Math.round(c.w * this.worldW))
+      const ch = Math.max(1, Math.round(c.h * this.worldH))
+      const canvas = document.createElement('canvas')
+      canvas.width = cw
+      canvas.height = ch
+      const cctx = canvas.getContext('2d')
+      if (cctx) {
+        const grad = cctx.createRadialGradient(cw / 2, ch / 2, 0, cw / 2, ch / 2, Math.max(cw, ch) / 2)
+        grad.addColorStop(0, c.color)
+        grad.addColorStop(0.38, c.color2)
+        grad.addColorStop(0.72, 'rgba(12, 16, 56, 0)')
+        cctx.fillStyle = grad
+        cctx.fillRect(0, 0, cw, ch)
+      }
+      return {
+        canvas,
+        x: c.x * this.worldW,
+        y: c.y * this.worldH,
+        driftX: c.drift * this.worldW,
+        driftY: c.drift * this.worldH,
+        phase: Math.random() * TAU,
+      }
+    })
+  }
+
+  /** 绘制预渲染的星云云层，带缓慢漂移与视差 */
+  private drawClouds(ctx: CanvasRenderingContext2D): void {
+    if (!this.cloudSprites.length) return
+    ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0)
+    const parallax = 0.12
+    const ox = (this.viewW / 2 - this.cam.x) * parallax + this.parallax.x * 0.5
+    const oy = (this.viewH / 2 - this.cam.y) * parallax + this.parallax.y * 0.5
+    for (const sprite of this.cloudSprites) {
+      const drift = this.motion ? Math.sin(this.time * 0.00004 + sprite.phase) : 0
+      const x = sprite.x + ox + drift * sprite.driftX
+      const y = sprite.y + oy + drift * sprite.driftY * 0.6
+      ctx.globalAlpha = 0.85
+      ctx.drawImage(sprite.canvas, x, y)
+    }
+    ctx.globalAlpha = 1
+  }
 
   private frame = (ts: number): void => {
     if (!this.running) return
-    this.raf = window.requestAnimationFrame(this.frame)
     const dt = this.lastTs ? Math.min(0.05, (ts - this.lastTs) / 1000) : 0.016
     this.lastTs = ts
     this.time = ts
     this.update(dt)
     this.render()
+    // 动效关闭且没有任何进行中的动画时，停止循环把 CPU/GPU 让给界面交互
+    if (this.motion || this.isAnimating()) {
+      this.raf = window.requestAnimationFrame(this.frame)
+    } else {
+      this.running = false
+    }
+  }
+
+  /** 是否还有需要持续刷新的动画（相机缓动 / 惯性 / 特效 / 偶遇引导） */
+  private isAnimating(): boolean {
+    if (this.panState) return true
+    if (Math.abs(this.panVel.x) > 0.01 || Math.abs(this.panVel.y) > 0.01) return true
+    if (
+      Math.abs(this.cam.x - this.camTarget.x) > 0.05 ||
+      Math.abs(this.cam.y - this.camTarget.y) > 0.05 ||
+      Math.abs(this.cam.zoom - this.camTarget.zoom) > 0.0008
+    ) {
+      return true
+    }
+    if (this.ripples.length || this.sparks.length || this.comets.length || this.guide) return true
+    return false
   }
 
   private update(dt: number): void {
@@ -617,7 +723,7 @@ export class NebulaEngine {
     // 流体拖尾
     if (motion && !this.lowPower && this.pointer.active) {
       if (!this.trail.length) {
-        this.trail = Array.from({ length: 14 }, () => ({ x: this.pointer.x, y: this.pointer.y }))
+        this.trail = Array.from({ length: 8 }, () => ({ x: this.pointer.x, y: this.pointer.y }))
       }
       this.trail[0].x += (this.pointer.x - this.trail[0].x) * 0.6
       this.trail[0].y += (this.pointer.y - this.trail[0].y) * 0.6
@@ -650,6 +756,8 @@ export class NebulaEngine {
   }
 
   private updateOffsets(): void {
+    // 暂停且没有偶遇引导时，偏移恒为 0，跳过高昂的 N² 计算与 DOM 写入
+    if (!this.motion && !this.guide) return
     this.offsets.clear()
     for (const idea of this.ideas) {
       this.offsets.set(idea.id, { x: 0, y: 0, near: false })
@@ -829,10 +937,16 @@ export class NebulaEngine {
     if (!ctx) return
     ctx.setTransform(1, 0, 0, 1, 0, 0)
     ctx.clearRect(0, 0, this.canvas.width, this.canvas.height)
-    ctx.globalCompositeOperation = 'lighter'
 
+    // 细丝与远 / 中层星尘用普通 alpha 混合，避免每帧数百次加法读改写
+    ctx.globalCompositeOperation = 'source-over'
+    this.drawClouds(ctx)
     this.drawFilaments(ctx)
     this.drawStars(ctx)
+
+    // 近层辉光与特效才用加法混合，营造发光感
+    ctx.globalCompositeOperation = 'lighter'
+    this.drawNearStars(ctx)
     this.drawWorld(ctx)
     this.drawTrail(ctx)
 
@@ -843,18 +957,21 @@ export class NebulaEngine {
   private drawFilaments(ctx: CanvasRenderingContext2D): void {
     if (!this.filaments.length || !this.motion) return
     const zoom = this.cam.zoom
+    const pointerActive = this.pointer.active
+    const px = this.pointerSmooth.x
     ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0)
     for (let f = 0; f < this.filaments.length; f += 1) {
       const item = this.filaments[f]
       const baseY = item.baseY * this.viewH - (this.cam.y - this.worldH / 2) * zoom * 0.18
       ctx.beginPath()
-      const step = 26
+      const step = 42
       for (let x = 0; x <= this.viewW + step; x += step) {
         const wave = Math.sin((x / this.viewW) * TAU * item.cycles + this.time * item.speed * 0.001 + item.phase) * item.amp
         let bend = 0
-        if (this.pointer.active) {
-          const dx = x - this.pointerSmooth.x
-          bend = -Math.exp(-(dx * dx) / (2 * 150 * 150)) * 52
+        // 只在指针靠近该段点时才计算高斯弯曲，远离时 bend=0 省去 exp
+        if (pointerActive) {
+          const dx = x - px
+          if (dx > -450 && dx < 450) bend = -Math.exp(-(dx * dx) / (2 * 150 * 150)) * 52
         }
         const y = baseY + wave + bend
         if (x === 0) ctx.moveTo(x, y)
@@ -866,17 +983,35 @@ export class NebulaEngine {
     }
   }
 
+  /** 远 / 中层星尘：纯色圆点，source-over 混合，开销极低 */
   private drawStars(ctx: CanvasRenderingContext2D): void {
     const sizeK = this.lowPower ? 5.0 : 6.2
-    for (let layer = 0; layer < 3; layer += 1) {
+    for (let layer = 0; layer < 2; layer += 1) {
       this.useCamera(ctx, STAR_PARALLAX[layer])
       for (const star of this.stars) {
         if (star.layer !== layer) continue
         const twinkle = this.motion ? 0.76 + Math.sin(this.time * 0.0008 * star.twinkle * 4 + star.phase) * 0.24 : 0.86
+        const alpha = clamp(star.a * twinkle, 0, 1)
         const size = star.r * sizeK
-        ctx.globalAlpha = clamp(star.a * twinkle, 0, 1)
-        ctx.drawImage(glowSprite(star.hue), star.x - size / 2, star.y - size / 2, size, size)
+        ctx.fillStyle = `hsla(${star.hue}, 92%, 86%, ${alpha})`
+        ctx.beginPath()
+        ctx.arc(star.x, star.y, size * 0.5, 0, TAU)
+        ctx.fill()
       }
+    }
+  }
+
+  /** 近层星尘：辉光贴图，lighter 加法混合，营造发光感 */
+  private drawNearStars(ctx: CanvasRenderingContext2D): void {
+    const sizeK = this.lowPower ? 5.0 : 6.2
+    this.useCamera(ctx, STAR_PARALLAX[2])
+    for (const star of this.stars) {
+      if (star.layer !== 2) continue
+      const twinkle = this.motion ? 0.76 + Math.sin(this.time * 0.0008 * star.twinkle * 4 + star.phase) * 0.24 : 0.86
+      const alpha = clamp(star.a * twinkle, 0, 1)
+      const size = star.r * sizeK
+      ctx.globalAlpha = alpha
+      ctx.drawImage(glowSprite(star.hue), star.x - size / 2, star.y - size / 2, size, size)
     }
     ctx.globalAlpha = 1
   }

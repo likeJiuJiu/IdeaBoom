@@ -1,0 +1,220 @@
+/* IdeaBoom — Spiral Galaxy visual direction. Load AFTER existing stylesheets. */
+.app-shell {
+  background:
+    radial-gradient(ellipse 74% 62% at 54% 47%, rgba(22, 42, 91, 0.72) 0%, rgba(8, 16, 42, 0.7) 48%, #030611 100%) !important;
+}
+
+/* The original cloud layer stays as a subtle atmospheric base. */
+.nebula-parallax { opacity: 0.46; }
+.nebula-cloud { filter: blur(86px); mix-blend-mode: screen; }
+.cloud-one { opacity: 0.24; }
+.cloud-two { opacity: 0.22; }
+.cloud-three { opacity: 0.18; }
+.cloud-four { opacity: 0.15; }
+.nebula-haze { opacity: 0.12; }
+
+/* New procedural galaxy canvas. */
+.galaxy-canvas {
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  mix-blend-mode: screen;
+  opacity: 0.98;
+}
+.cosmic-vignette { z-index: 2; }
+.particle-canvas { z-index: 3; }
+.cosmic-grain { z-index: 4; opacity: 0.14; }
+
+/* Give the galaxy the whole stage: the headline becomes a small editorial mark. */
+.hero-copy {
+  top: 18%;
+  left: clamp(22px, 4.5vw, 76px);
+  max-width: 268px;
+  opacity: 0.78;
+}
+.hero-copy .eyebrow {
+  margin-bottom: 14px;
+  font-size: 8px;
+  letter-spacing: 0.2em;
+}
+.hero-copy h1 {
+  font-size: clamp(23px, 2.05vw, 34px);
+  line-height: 1.38;
+  letter-spacing: -0.045em;
+  text-shadow: 0 0 28px rgba(138, 177, 255, 0.22);
+}
+.hero-copy p {
+  margin-top: 12px;
+  font-size: 11px;
+  line-height: 1.9;
+  color: rgba(213, 224, 248, 0.62);
+}
+.hero-footnote { margin-top: 16px; font-size: 9px; }
+
+/* A thought becomes a miniature galaxy, not a lone LED dot. */
+.idea-node {
+  width: 112px;
+  height: 112px;
+  isolation: isolate;
+}
+.idea-node::before {
+  content: '';
+  position: absolute;
+  z-index: 0;
+  left: 50%;
+  top: 50%;
+  width: 108px;
+  height: 74px;
+  border-radius: 50%;
+  transform: translate(-50%, -50%) rotate(-24deg);
+  background:
+    radial-gradient(ellipse at 50% 50%, color-mix(in srgb, var(--node-color), transparent 76%) 0%, transparent 66%),
+    conic-gradient(from 28deg,
+      transparent 0deg,
+      color-mix(in srgb, var(--node-color), transparent 76%) 34deg,
+      transparent 78deg,
+      color-mix(in srgb, var(--node-color), transparent 82%) 142deg,
+      transparent 205deg,
+      color-mix(in srgb, var(--node-color), transparent 75%) 274deg,
+      transparent 330deg);
+  filter: blur(8px);
+  opacity: 0.58;
+  mix-blend-mode: screen;
+  animation: idea-mini-nebula 28s linear infinite;
+}
+.idea-node::after {
+  content: '';
+  position: absolute;
+  z-index: 1;
+  left: 50%;
+  top: 50%;
+  width: 88px;
+  height: 34px;
+  border: 1px solid color-mix(in srgb, var(--node-color), transparent 48%);
+  border-left-color: transparent;
+  border-right-color: color-mix(in srgb, var(--node-color), transparent 68%);
+  border-radius: 50%;
+  transform: translate(-50%, -50%) rotate(-28deg);
+  box-shadow: 0 0 12px color-mix(in srgb, var(--node-color), transparent 82%);
+  opacity: 0.42;
+  animation: idea-orbit 19s linear infinite;
+}
+.idea-node .node-aura {
+  z-index: 1;
+  width: 82px;
+  height: 82px;
+  background:
+    radial-gradient(circle at 50% 50%, color-mix(in srgb, var(--node-color), transparent 48%) 0%, color-mix(in srgb, var(--node-color), transparent 78%) 28%, transparent 72%),
+    radial-gradient(ellipse at 38% 42%, color-mix(in srgb, var(--node-color), transparent 66%), transparent 70%);
+  filter: blur(5px);
+  opacity: 0.9;
+  animation: idea-aura-breathe 6.2s ease-in-out var(--node-delay) infinite;
+}
+.idea-node .node-ring {
+  z-index: 2;
+  border-color: color-mix(in srgb, var(--node-color), transparent 40%);
+  opacity: 0.28;
+}
+.idea-node .ring-one {
+  width: 74px;
+  height: 33px;
+  transform: translate(-50%, -50%) rotate(-25deg);
+  animation: idea-ring-drift 14s linear var(--node-delay) infinite;
+}
+.idea-node .ring-two {
+  width: 102px;
+  height: 46px;
+  transform: translate(-50%, -50%) rotate(38deg);
+  opacity: 0.14;
+  animation: idea-ring-drift 24s linear var(--node-delay) infinite reverse;
+}
+.idea-node .node-core {
+  z-index: 4;
+  width: 9px;
+  height: 9px;
+  margin: -4.5px 0 0 -4.5px;
+  background: radial-gradient(circle at 38% 34%, #fff 0%, #fff 28%, color-mix(in srgb, var(--node-color), white 18%) 58%, var(--node-color) 100%);
+  box-shadow:
+    0 0 5px 2px rgba(255,255,255,0.96),
+    0 0 16px 7px var(--node-color),
+    0 0 36px 14px color-mix(in srgb, var(--node-color), transparent 48%);
+}
+.idea-node.node-large .node-aura { width: 104px; height: 104px; }
+.idea-node.node-large::before { width: 132px; height: 86px; }
+.idea-node.node-large .node-core {
+  width: 12px;
+  height: 12px;
+  margin: -6px 0 0 -6px;
+  box-shadow:
+    0 0 7px 3px #fff,
+    0 0 22px 10px var(--node-color),
+    0 0 58px 22px color-mix(in srgb, var(--node-color), transparent 42%);
+}
+.idea-node .node-label {
+  z-index: 6;
+  top: calc(50% + 55px);
+  max-width: 236px;
+  padding: 7px 11px;
+  border-radius: 999px;
+  border-color: color-mix(in srgb, var(--node-color), transparent 78%);
+  background: rgba(5, 10, 29, 0.68);
+  color: rgba(231, 238, 255, 0.7);
+  box-shadow: 0 5px 24px rgba(0,0,0,0.22), inset 0 1px 0 rgba(255,255,255,0.04);
+  backdrop-filter: blur(18px) saturate(140%);
+  opacity: 0.48;
+}
+.idea-node:hover::before,
+.idea-node.is-focused::before,
+.idea-node.is-encountering::before { opacity: 0.9; filter: blur(5px); }
+.idea-node:hover::after,
+.idea-node.is-focused::after,
+.idea-node.is-encountering::after { opacity: 0.86; }
+.idea-node:hover .node-ring,
+.idea-node.is-focused .node-ring,
+.idea-node.is-encountering .node-ring { opacity: 0.72; }
+.idea-node:hover .node-label,
+.idea-node.is-focused .node-label,
+.idea-node.is-encountering .node-label { opacity: 1; }
+.focus-mode .idea-node:not(.is-focused) { opacity: 0.2; filter: saturate(0.55); }
+
+@keyframes idea-mini-nebula {
+  0% { transform: translate(-50%, -50%) rotate(-24deg) scale(0.94); }
+  50% { transform: translate(-50%, -50%) rotate(156deg) scale(1.08); }
+  100% { transform: translate(-50%, -50%) rotate(336deg) scale(0.94); }
+}
+@keyframes idea-orbit {
+  from { transform: translate(-50%, -50%) rotate(-28deg); }
+  to { transform: translate(-50%, -50%) rotate(332deg); }
+}
+@keyframes idea-ring-drift {
+  from { filter: brightness(0.84); }
+  50% { filter: brightness(1.35); }
+  to { filter: brightness(0.84); }
+}
+@keyframes idea-aura-breathe {
+  0%, 100% { transform: translate(-50%, -50%) scale(0.88); opacity: 0.55; }
+  50% { transform: translate(-50%, -50%) scale(1.14); opacity: 0.95; }
+}
+
+@media (max-width: 900px) {
+  .hero-copy { top: 15%; max-width: 220px; }
+  .hero-copy h1 { font-size: clamp(21px, 5vw, 29px); }
+  .idea-node { width: 90px; height: 90px; }
+  .idea-node::before { width: 88px; height: 62px; }
+  .idea-node::after { width: 72px; height: 28px; }
+  .idea-node .node-aura { width: 68px; height: 68px; }
+  .idea-node .ring-one { width: 62px; height: 28px; }
+  .idea-node .ring-two { width: 84px; height: 38px; }
+  .idea-node .node-label { top: calc(50% + 44px); max-width: 190px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .idea-node::before,
+  .idea-node::after,
+  .idea-node .node-aura,
+  .idea-node .node-ring { animation: none !important; }
+}

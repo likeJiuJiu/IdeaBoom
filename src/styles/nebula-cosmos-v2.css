@@ -1,0 +1,155 @@
+/* IdeaBoom Cosmos V2 — visual overrides
+   Load after style.css and nebula-luxe.css. */
+
+:root {
+  --cosmos-violet: #aa91ff;
+  --cosmos-cyan: #85e9ff;
+  --cosmos-mint: #a4f2df;
+}
+
+/* Give the sky the stage: the headline becomes an atmospheric whisper. */
+.hero-copy {
+  top: 17.5%;
+  left: clamp(24px, 4.8vw, 76px);
+  width: min(250px, 22vw);
+  max-width: 250px;
+  opacity: .34;
+  filter: saturate(.82);
+  transition: opacity .7s cubic-bezier(.2,.7,.2,1), transform .7s cubic-bezier(.2,.7,.2,1);
+}
+.hero-copy:hover { opacity: .82; }
+.hero-copy .eyebrow {
+  margin-bottom: 13px;
+  font-size: 7px;
+  letter-spacing: .2em;
+  opacity: .72;
+}
+.hero-copy .eyebrow span { width: 16px; }
+.hero-copy h1 {
+  font-size: clamp(19px, 1.55vw, 25px);
+  line-height: 1.48;
+  letter-spacing: -.045em;
+  text-shadow: 0 0 34px rgba(159,144,255,.22);
+}
+.hero-copy p {
+  margin-top: 12px;
+  font-size: 10px;
+  line-height: 1.9;
+  letter-spacing: .035em;
+  color: rgba(210,211,245,.58);
+}
+.hero-footnote {
+  margin-top: 15px;
+  font-size: 8px;
+  letter-spacing: .08em;
+  opacity: .7;
+}
+
+/* More depth in the atmosphere; the engine supplies the larger pointer parallax. */
+.cosmos-background {
+  background:
+    radial-gradient(ellipse 74% 66% at 58% 48%, rgba(65,53,153,.18), transparent 68%),
+    radial-gradient(ellipse 54% 42% at 32% 68%, rgba(40,105,166,.10), transparent 72%);
+}
+.nebula-cloud { mix-blend-mode: screen; }
+.cloud-one { opacity: .48; filter: blur(82px); animation-duration: 29s; }
+.cloud-two { opacity: .40; filter: blur(88px); animation-duration: 36s; }
+.cloud-three { opacity: .34; filter: blur(92px); animation-duration: 32s; }
+.cloud-four { opacity: .25; filter: blur(76px); animation-duration: 41s; }
+.haze-one { opacity: .29; filter: blur(72px); }
+.haze-two { opacity: .23; filter: blur(68px); }
+
+/* Idea nodes should feel like distant luminous bodies, not fixed LED bulbs. */
+.idea-node {
+  width: 42px;
+  height: 42px;
+  transition: opacity .55s ease, filter .55s ease;
+}
+.node-core {
+  width: 5px;
+  height: 5px;
+  margin: -2.5px 0 0 -2.5px;
+  background: #fff;
+  box-shadow:
+    0 0 4px 1px rgba(255,255,255,.96),
+    0 0 12px 5px color-mix(in srgb, var(--node-color), transparent 16%),
+    0 0 30px 12px color-mix(in srgb, var(--node-color), transparent 43%),
+    0 0 62px 22px color-mix(in srgb, var(--node-color), transparent 76%);
+}
+.node-aura {
+  width: 54px;
+  height: 54px;
+  opacity: .56;
+  filter: blur(5px);
+  background: radial-gradient(circle,
+    color-mix(in srgb, var(--node-color), transparent 58%) 0%,
+    color-mix(in srgb, var(--node-color), transparent 82%) 38%,
+    transparent 73%);
+}
+.node-ring { opacity: .10; border-color: color-mix(in srgb, var(--node-color), transparent 24%); }
+.idea-node:hover .node-aura,
+.idea-node.is-focused .node-aura { opacity: .9; filter: blur(7px); }
+.idea-node:hover .node-core,
+.idea-node.is-focused .node-core {
+  box-shadow:
+    0 0 5px 2px #fff,
+    0 0 18px 8px var(--node-color),
+    0 0 44px 18px color-mix(in srgb, var(--node-color), transparent 38%),
+    0 0 82px 30px color-mix(in srgb, var(--node-color), transparent 72%);
+}
+.node-label {
+  font-size: 9px;
+  background: rgba(8, 10, 29, .46);
+  border-color: rgba(194,184,255,.10);
+  backdrop-filter: blur(18px) saturate(145%);
+}
+
+/* Remove the impression of six dominant horizontal guide lines. */
+.orbit-caption { opacity: .48; }
+.side-orbit { opacity: .34; }
+
+/* Keep the bottom actions legible while letting the nebula occupy the full stage. */
+.bottom-center { filter: drop-shadow(0 12px 34px rgba(5,8,28,.35)); }
+.capture-button {
+  box-shadow:
+    0 14px 42px rgba(6,8,30,.36),
+    0 0 34px rgba(129,112,255,.16),
+    inset 0 1px 0 rgba(255,255,255,.23);
+}
+
+@media (max-width: 1080px) {
+  .hero-copy {
+    top: 15%;
+    left: 4%;
+    width: 210px;
+    max-width: 210px;
+    opacity: .27;
+  }
+  .hero-copy h1 { font-size: 21px; }
+  .hero-copy p { font-size: 9px; }
+}
+
+@media (max-width: 760px) {
+  .hero-copy {
+    top: 12%;
+    left: 50%;
+    width: min(78vw, 280px);
+    max-width: 280px;
+    padding: 0;
+    transform: translateX(-50%);
+    opacity: .24;
+    text-align: center;
+  }
+  .hero-copy:hover { opacity: .68; }
+  .hero-copy h1 { font-size: clamp(18px, 5vw, 23px); }
+  .hero-copy p { font-size: 9px; }
+  .idea-node { width: 34px; height: 34px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nebula-cloud,
+  .nebula-haze,
+  .node-core,
+  .node-aura,
+  .node-ring { animation-duration: .01ms !important; }
+}
