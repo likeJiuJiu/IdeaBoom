@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { NebulaEngine } from './lib/nebula'
 import { SpiralGalaxyLayer } from './lib/spiral-galaxy'
+import ObservationWorkspace from './components/ObservationWorkspace.vue'
 
 type Idea = {
   id: number
@@ -438,6 +439,11 @@ function submitIdea() {
   composerOpen.value = false
   draftIdea.value = ''
   afterIdeaAdded(idea, '一颗新的光点，正在凝聚。')
+}
+function addObservationFromWorkspace(text: string) {
+  const idea = addIdea(text)
+  if (!idea) return
+  afterIdeaAdded(idea, '观察已保存，已经加入星云。')
 }
 function openIdea(idea: Idea) {
   activeIdea.value = idea
@@ -937,6 +943,10 @@ onBeforeUnmount(() => {
     </Transition>
 
     <Transition name="toast-rise"><div v-if="toastVisible" class="toast-message"><span>✦</span>{{ toastMessage }}</div></Transition>
+    <ObservationWorkspace
+  :ideas="ideas"
+  @create="addObservationFromWorkspace"
+/>
   </main>
 </template>
 
