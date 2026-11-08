@@ -1,0 +1,159 @@
+/* IdeaBoom · 偶遇入口与时间回响面板。沿用项目现有 glass-modal / modal-fade 视觉。 */
+.encounter-launcher {
+  position: relative;
+  display: inline-flex;
+  justify-content: center;
+}
+
+.encounter-menu {
+  position: absolute;
+  z-index: 30;
+  left: 50%;
+  bottom: calc(100% + 16px);
+  width: min(360px, calc(100vw - 36px));
+  padding: 10px;
+  display: grid;
+  gap: 8px;
+  border: 1px solid rgba(184, 174, 255, 0.22);
+  border-radius: 20px;
+  background: linear-gradient(145deg, rgba(19, 22, 48, 0.94), rgba(10, 17, 38, 0.91));
+  box-shadow: 0 18px 70px rgba(0, 0, 0, 0.42), 0 0 32px rgba(111, 91, 219, 0.13);
+  backdrop-filter: blur(18px);
+  transform: translateX(-50%);
+}
+
+.encounter-menu-item {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 12px;
+  text-align: left;
+  color: rgba(242, 240, 255, 0.94);
+  border: 1px solid rgba(190, 184, 255, 0.1);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.035);
+  cursor: pointer;
+  transition: background 180ms ease, border-color 180ms ease, transform 180ms ease;
+}
+
+.encounter-menu-item:hover {
+  background: rgba(151, 133, 255, 0.12);
+  border-color: rgba(178, 164, 255, 0.34);
+  transform: translateY(-1px);
+}
+
+.encounter-menu-icon {
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  border-radius: 12px;
+  color: #d8ccff;
+  background: radial-gradient(circle at 35% 30%, rgba(206, 190, 255, 0.28), rgba(117, 103, 219, 0.12));
+  box-shadow: inset 0 0 18px rgba(174, 151, 255, 0.12), 0 0 20px rgba(142, 119, 255, 0.12);
+  font-size: 18px;
+}
+
+.encounter-menu-copy {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+.encounter-menu-copy strong { font-size: 13px; font-weight: 650; letter-spacing: 0.02em; }
+.encounter-menu-copy small { color: rgba(202, 199, 229, 0.62); font-size: 11px; line-height: 1.5; }
+.encounter-menu-hint { color: rgba(192, 182, 255, 0.7); font-size: 10px; white-space: nowrap; }
+
+.encounter-menu-enter-active,
+.encounter-menu-leave-active { transition: opacity 160ms ease, transform 160ms ease; }
+.encounter-menu-enter-from,
+.encounter-menu-leave-to { opacity: 0; transform: translate(-50%, 8px); }
+
+.echo-modal { width: min(620px, calc(100vw - 32px)); }
+.echo-date-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 2px 0 18px;
+  color: rgba(195, 190, 225, 0.68);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+.echo-age-pill,
+.encounter-mode-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border: 1px solid rgba(168, 155, 255, 0.2);
+  border-radius: 999px;
+  color: rgba(222, 215, 255, 0.85);
+  background: rgba(140, 121, 255, 0.08);
+  font-size: 10px;
+}
+.echo-thought {
+  position: relative;
+  margin: 12px 0 18px;
+  padding: clamp(20px, 4vw, 30px);
+  overflow: hidden;
+  border: 1px solid rgba(172, 159, 255, 0.2);
+  border-radius: 20px;
+  background: radial-gradient(ellipse at 12% 0%, rgba(116, 100, 218, 0.16), transparent 54%), rgba(255, 255, 255, 0.035);
+  box-shadow: inset 0 0 36px rgba(117, 100, 230, 0.055), 0 12px 42px rgba(0, 0, 0, 0.12);
+}
+.echo-thought::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 22px;
+  bottom: 22px;
+  width: 2px;
+  border-radius: 2px;
+  background: linear-gradient(180deg, #a99bff, #74e3ed);
+  box-shadow: 0 0 14px rgba(152, 137, 255, 0.65);
+}
+.echo-thought blockquote {
+  margin: 0;
+  color: rgba(248, 247, 255, 0.96);
+  font-size: clamp(18px, 2.5vw, 25px);
+  font-weight: 480;
+  line-height: 1.75;
+  letter-spacing: 0.025em;
+}
+.echo-prompt {
+  margin: 0 0 10px;
+  color: rgba(213, 208, 239, 0.78);
+  font-size: 12px;
+}
+.echo-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 16px;
+}
+.echo-secondary-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.encounter-mode-note {
+  margin: -4px 0 16px;
+  color: rgba(201, 197, 226, 0.64);
+  text-align: center;
+  font-size: 11px;
+  line-height: 1.7;
+}
+
+@media (max-width: 640px) {
+  .encounter-menu { bottom: calc(100% + 12px); }
+  .echo-actions { align-items: stretch; }
+  .echo-secondary-actions { width: 100%; }
+  .echo-secondary-actions > button { flex: 1; }
+  .echo-actions > .primary-button { width: 100%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .encounter-menu-item,
+  .encounter-menu-enter-active,
+  .encounter-menu-leave-active { transition: none !important; }
+}
