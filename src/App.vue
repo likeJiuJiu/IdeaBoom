@@ -1124,7 +1124,8 @@ onBeforeUnmount(() => {
   @create="addObservationFromWorkspace"
   @relations-change="syncConfirmedObservationRelations"
   @themes-change="syncProblemThemes"
-/>
+      @open-theme="openThemeSpace"
+    />
     <ThemeDetailSpace
       v-if="themeDetail"
       :theme="themeDetail.theme"

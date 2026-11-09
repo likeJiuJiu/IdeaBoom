@@ -205,7 +205,7 @@ function findIdeaText(id: number): string {
               </div>
               <p>{{ theme.description || '这个主题由你确认关联的观察记录组成。' }}</p>
               <div class="theme-space-heading-actions">
-                <button type="button" class="theme-space-edit-toggle" @click="editingDetails = !editingDetails">{{ editingDetails ? '收起编辑' : '编辑主题信息' }}</button>
+                <button type="button" class="theme-space-edit-toggle" @click="editingDetails = !editingDetails">{{ editingDetails ? '收起编辑' : '编辑标题与描述' }}</button>
               </div>
               <form v-if="editingDetails" class="theme-space-edit-form" @submit.prevent="saveThemeDetails">
                 <label>主题名称<input v-model="titleDraft" maxlength="48" /></label>
@@ -432,4 +432,22 @@ function findIdeaText(id: number): string {
 @media(max-width:850px){.theme-space-hero-grid{grid-template-columns:1fr}.theme-space-summary-card{display:grid;grid-template-columns:70px 1fr;column-gap:14px;align-items:center}.theme-space-summary-card>.theme-space-overline{grid-column:1/-1}.theme-space-summary-orb{grid-row:2/5;width:62px;height:62px;margin:8px 0}.theme-space-summary-card>strong,.theme-space-summary-card>p{align-self:start;justify-self:start;text-align:left}.theme-space-summary-card>p{margin:4px 0 9px}.theme-space-stat-grid,.theme-space-age{grid-column:1/-1}.theme-space-content-grid{grid-template-columns:1fr}}
 @media(max-width:560px){.theme-space-backdrop{padding:0}.theme-space-panel{max-height:100dvh;height:100dvh;border-radius:0;border-left:0;border-right:0}.theme-space-header{padding:18px 16px}.theme-space-scroll{padding:14px}.theme-space-network-card,.theme-space-content-card,.theme-space-timeline-card{padding:13px}.theme-space-network,.theme-space-network svg{min-height:210px;height:210px}.theme-space-section-topline{align-items:flex-start}.theme-space-count{white-space:normal;text-align:right}.theme-space-footer{align-items:flex-start;flex-direction:column}.theme-space-footer button{align-self:flex-end}}
 @media(prefers-reduced-motion:reduce){.theme-space-fade-enter-active,.theme-space-fade-leave-active{transition:none}}
+
+
+/* Phase 7 Theme Center V2: improve readability and make editing obvious. */
+.theme-space-title-row h2 { font-size: clamp(25px, 2.7vw, 34px) !important; line-height: 1.3 !important; }
+.theme-space-heading > p { font-size: 14px !important; line-height: 1.8 !important; }
+.theme-space-edit-toggle { padding: 10px 15px !important; border-color: rgba(181,162,255,.42) !important; color: #f1eaff !important; background: linear-gradient(120deg,rgba(135,111,220,.3),rgba(65,125,172,.2)) !important; font-size: 13px !important; }
+.theme-space-edit-form { padding: 17px !important; gap: 13px !important; }
+.theme-space-edit-form label { font-size: 13px !important; }
+.theme-space-edit-form input, .theme-space-edit-form textarea { padding: 12px 13px !important; font-size: 14px !important; }
+.theme-space-form-actions span, .theme-space-local-message { font-size: 12px !important; }
+.theme-space-form-actions button { padding: 10px 14px !important; font-size: 13px !important; }
+.theme-space-section-topline h3 { font-size: 18px !important; }
+.theme-space-member-text { font-size: 14px !important; }
+.theme-space-relation-reason { font-size: 13px !important; }
+.theme-space-evidence p { font-size: 12px !important; }
+.theme-space-timeline-copy strong { font-size: 13px !important; }
+.theme-space-timeline-copy > p { font-size: 12px !important; }
+
 </style>
