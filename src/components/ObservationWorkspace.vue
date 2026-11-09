@@ -36,7 +36,6 @@ const emit = defineEmits<{
 
 const isOpen = ref(false)
 const isComposerOpen = ref(false)
-const isAnalyzing = ref(false)
 const draftText = ref('')
 const themeTitle = ref('')
 const statusMessage = ref('')
@@ -56,6 +55,30 @@ const editingThemeId = ref<string | null>(null)
 const themeTitleDraft = ref('')
 const themeDescriptionDraft = ref('')
 const workspace = ref<ObservationWorkspaceState>(loadObservationWorkspace())
+type AnalysisTaskStatus = 'idle' | 'pending' | 'analyzing' | 'completed' | 'local-fallback' | 'failed'
+type AnalysisQueueItem = {
+  observationId: number
+  source: 'auto' | 'manual'
+}
+
+const AUTO_ANALYZE_STORAGE_KEY = 'ideaboom-auto-analyze-v1'
+
+function loadAutoAnalyzePreference(): boolean {
+  try {
+    if (typeof window === 'undefined') return true
+    const saved = window.localStorage.getItem(AUTO_ANALYZE_STORAGE_KEY)
+    // 首次使用默认开启；用户关闭后会记住选择。
+    return saved === null ? true : saved === 'true'
+  } catch {
+    return true
+  }
+}
+
+const autoAnalyzeEnabled = ref(loadAutoAnalyzePreference())
+const analysisStatusById = ref<Record<string, AnalysisTaskStatus>>({})
+const analysisQueue: AnalysisQueueItem[] = []
+const queuedAnalysisIds = new Set<number>()
+let analysisQueueRunning = false
 
 const orderedIdeas = computed(() => [...props.ideas].sort((a, b) => {
   const timeA = Date.parse(a.createdAt) || 0
@@ -81,6 +104,45 @@ const selectedAnalysis = computed<ObservationAnalysis | null>(() => {
   if (!selectedId.value) return null
   return workspace.value.analyses[String(selectedId.value)] ?? null
 })
+
+const selectedAnalysisStatus = computed<AnalysisTaskStatus>(() => {
+  if (selectedId.value === null) return 'idle'
+
+  const key = String(selectedId.value)
+  const runtimeStatus = analysisStatusById.value[key]
+  if (runtimeStatus) return runtimeStatus
+
+  // 兼容已经保存过的历史分析结果。
+  const savedAnalysis = workspace.value.analyses[key]
+  if (!savedAnalysis) return 'idle'
+  return savedAnalysis.engine === 'llm' ? 'completed' : 'local-fallback'
+})
+
+const isAnalyzing = computed(() =>
+  selectedAnalysisStatus.value === 'pending' || selectedAnalysisStatus.value === 'analyzing',
+)
+
+// 只比较 ID：修改位置、颜色等展示属性不会触发重复分析。
+// 非 immediate：组件首次加载时不会把历史观察批量发送给模型。
+watch(
+  () => props.ideas.map((item) => item.id).join(','),
+  (_currentIds, previousIds) => {
+    if (!autoAnalyzeEnabled.value) return
+
+    const previousIdSet = new Set(
+      (previousIds ?? '').split(',').filter(Boolean),
+    )
+
+    const newlyAdded = props.ideas.filter(
+      (item) => !previousIdSet.has(String(item.id)),
+    )
+
+    for (const item of newlyAdded) {
+      enqueueObservationAnalysis(item.id, 'auto')
+    }
+  },
+  { flush: 'post' },
+)
 
 const localCandidates = computed(() => {
   if (!selectedObservation.value) return []
@@ -312,100 +374,235 @@ function persist(): void {
   saveObservationWorkspace(workspace.value)
 }
 
+function setAnalysisStatus(observationId: number, status: AnalysisTaskStatus): void {
+  analysisStatusById.value = {
+    ...analysisStatusById.value,
+    [String(observationId)]: status,
+  }
+}
+
+function toggleAutoAnalyze(): void {
+  autoAnalyzeEnabled.value = !autoAnalyzeEnabled.value
+
+  try {
+    window.localStorage.setItem(
+      AUTO_ANALYZE_STORAGE_KEY,
+      String(autoAnalyzeEnabled.value),
+    )
+  } catch (error) {
+    console.warn('[IdeaBoom] 自动理解偏好保存失败：', error)
+  }
+
+  if (!autoAnalyzeEnabled.value) {
+    // 取消尚未开始的自动任务，手动发起的任务保留。
+    const remainingTasks: AnalysisQueueItem[] = []
+
+    for (const task of analysisQueue) {
+      if (task.source === 'auto') {
+        queuedAnalysisIds.delete(task.observationId)
+        setAnalysisStatus(task.observationId, 'idle')
+      } else {
+        remainingTasks.push(task)
+      }
+    }
+
+    analysisQueue.splice(0, analysisQueue.length, ...remainingTasks)
+    statusMessage.value = '自动理解已关闭；正在执行的请求会完成，尚未开始的自动任务已取消。'
+  } else {
+    statusMessage.value = '自动理解已开启；从现在开始新增的观察会自动分析，已有记录不会批量重跑。'
+  }
+}
+
+function enqueueObservationAnalysis(
+  observationId: number,
+  source: 'auto' | 'manual',
+): void {
+  const key = String(observationId)
+  const currentStatus = analysisStatusById.value[key]
+
+  // 同一条观察不能重复进入队列或同时执行。
+  if (queuedAnalysisIds.has(observationId)) return
+  if (currentStatus === 'pending' || currentStatus === 'analyzing') return
+
+  queuedAnalysisIds.add(observationId)
+  analysisQueue.push({ observationId, source })
+  setAnalysisStatus(observationId, 'pending')
+
+  void processObservationAnalysisQueue()
+}
+
+async function processObservationAnalysisQueue(): Promise<void> {
+  if (analysisQueueRunning) return
+  analysisQueueRunning = true
+
+  try {
+    while (analysisQueue.length > 0) {
+      const task = analysisQueue.shift()
+      if (!task) continue
+
+      queuedAnalysisIds.delete(task.observationId)
+
+      // 用户关闭自动理解后，跳过尚未开始的自动任务。
+      // 手动点击发起的分析不受此开关影响。
+      if (task.source === 'auto' && !autoAnalyzeEnabled.value) {
+        setAnalysisStatus(task.observationId, 'idle')
+        continue
+      }
+
+      await runObservationAnalysis(task.observationId)
+    }
+  } finally {
+    analysisQueueRunning = false
+
+    // 处理队列结束瞬间新加入的任务，避免任务滞留。
+    if (analysisQueue.length > 0) {
+      void processObservationAnalysisQueue()
+    }
+  }
+}
+
+async function runObservationAnalysis(observationId: number): Promise<void> {
+  const observation = orderedIdeas.value.find((item) => item.id === observationId)
+  if (!observation) {
+    setAnalysisStatus(observationId, 'failed')
+    return
+  }
+
+  setAnalysisStatus(observationId, 'analyzing')
+
+  // 只将当前观察和最近 20 条历史观察交给模型，避免请求无限膨胀。
+  const candidates = orderedIdeas.value
+    .filter((item) => item.id !== observation.id)
+    .slice(0, 20)
+
+  try {
+    const result = await requestObservationAnalysis({ observation, candidates })
+
+    if (!result?.analysis || !Array.isArray(result.relations)) {
+      throw new Error('AI 服务返回的数据结构不完整。')
+    }
+
+    const generatedAt = new Date().toISOString()
+    const analysis: ObservationAnalysis = {
+      observationId: observation.id,
+      generatedAt,
+      engine: 'llm',
+      summary: String(result.analysis.summary ?? ''),
+      scene: String(result.analysis.scene ?? ''),
+      phenomenon: String(result.analysis.phenomenon ?? ''),
+      friction: String(result.analysis.friction ?? ''),
+      affectedPeople: String(result.analysis.affectedPeople ?? ''),
+      currentWorkaround: String(result.analysis.currentWorkaround ?? ''),
+      potentialProblem: String(result.analysis.potentialProblem ?? ''),
+      questionToExplore: String(result.analysis.questionToExplore ?? ''),
+      keywords: Array.isArray(result.analysis.keywords) ? result.analysis.keywords : [],
+      unknowns: Array.isArray(result.analysis.unknowns) ? result.analysis.unknowns : [],
+    }
+
+    workspace.value.analyses[String(observation.id)] = analysis
+
+    const now = new Date().toISOString()
+    for (const item of result.relations) {
+      const target = candidates.find((candidate) => candidate.id === item.targetId)
+      if (!target) continue
+
+      const relation: ObservationRelation = {
+        id: relationId(observation.id, target.id),
+        sourceId: observation.id,
+        targetId: target.id,
+        type: item.type,
+        reason: item.reason || 'AI 认为两条观察可能存在联系，请结合原文判断。',
+        evidenceFromSource: item.evidenceFromSource || observation.text.slice(0, 100),
+        evidenceFromTarget: item.evidenceFromTarget || target.text.slice(0, 100),
+        sharedTerms: Array.isArray(item.sharedTerms) ? item.sharedTerms : [],
+        status: 'suggested',
+        engine: 'llm',
+        createdAt: now,
+        updatedAt: now,
+      }
+
+      // upsertRelation 会保留用户已经确认或否定的关系，不会被 AI 覆盖。
+      workspace.value = upsertRelation(workspace.value, relation)
+    }
+
+    persist()
+    setAnalysisStatus(observation.id, 'completed')
+
+    if (selectedId.value === observation.id) {
+      statusMessage.value = result.relations.length
+        ? `自动理解完成，找到 ${result.relations.length} 条待你判断的关联线索。`
+        : '自动理解完成。目前没有足够依据推荐历史关联，这也是正常结果。'
+    }
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : 'AI 服务暂时不可用。'
+
+    try {
+      // 大模型失败时，使用已有本地规则兜底；明确标记来源，不冒充 AI 结论。
+      workspace.value.analyses[String(observation.id)] = analyzeObservationLocally(observation)
+
+      const localCandidates = findLocalRelationCandidates(observation, orderedIdeas.value, 5)
+      const now = new Date().toISOString()
+
+      for (const candidate of localCandidates) {
+        const target = orderedIdeas.value.find((item) => item.id === candidate.targetId)
+        if (!target) continue
+
+        const relation: ObservationRelation = {
+          id: relationId(observation.id, target.id),
+          sourceId: observation.id,
+          targetId: target.id,
+          type: candidate.type,
+          reason: candidate.reason,
+          evidenceFromSource: observation.text.slice(0, 100),
+          evidenceFromTarget: target.text.slice(0, 100),
+          sharedTerms: candidate.sharedTerms,
+          status: 'suggested',
+          engine: 'local-rules',
+          createdAt: now,
+          updatedAt: now,
+        }
+
+        workspace.value = upsertRelation(workspace.value, relation)
+      }
+
+      persist()
+      setAnalysisStatus(observation.id, 'local-fallback')
+
+      if (selectedId.value === observation.id) {
+        statusMessage.value = `大模型暂不可用：${reason} 已使用本地规则提供基础线索；这些结果不是 AI 结论。`
+      }
+    } catch (fallbackError) {
+      console.error('[IdeaBoom] 本地分析兜底也未能完成：', fallbackError)
+      setAnalysisStatus(observation.id, 'failed')
+
+      if (selectedId.value === observation.id) {
+        statusMessage.value = '分析未能完成。原始观察仍然保留，可以稍后重试。'
+      }
+    }
+  }
+}
+
 function submitObservation(): void {
   const text = draftText.value.trim()
   if (!text) {
     statusMessage.value = '先写下一件你注意到的事情。'
     return
   }
+
   emit('create', text)
   draftText.value = ''
   isComposerOpen.value = false
-  statusMessage.value = '观察已收入星云。你可以稍后再理解它。'
+  statusMessage.value = autoAnalyzeEnabled.value
+    ? '观察已收入星云，自动理解正在排队。'
+    : '观察已收入星云；自动理解已关闭，你仍可手动分析。'
 }
 
-function applyLocalAnalysis(message?: string): void {
-  const selected = selectedObservation.value
-  if (!selected) return
-  const analysis = analyzeObservationLocally(selected)
-  workspace.value.analyses[String(selected.id)] = analysis
-
-  for (const candidate of localCandidates.value) {
-    const target = orderedIdeas.value.find((item) => item.id === candidate.targetId)
-    if (!target) continue
-    const now = new Date().toISOString()
-    const relation: ObservationRelation = {
-      id: relationId(selected.id, target.id),
-      sourceId: selected.id,
-      targetId: target.id,
-      type: candidate.type,
-      reason: candidate.reason,
-      evidenceFromSource: selected.text.slice(0, 100),
-      evidenceFromTarget: target.text.slice(0, 100),
-      sharedTerms: candidate.sharedTerms,
-      status: 'suggested',
-      engine: 'local-rules',
-      createdAt: now,
-      updatedAt: now,
-    }
-    workspace.value = upsertRelation(workspace.value, relation)
-  }
-
-  persist()
-  statusMessage.value = message || '已完成本地初步整理。它不是大模型判断，也不代表问题已经成立。'
+function analyzeSelected(): void {
+  if (selectedId.value === null) return
+  enqueueObservationAnalysis(selectedId.value, 'manual')
 }
-
-async function analyzeSelected(): Promise<void> {
-  const selected = selectedObservation.value
-  if (!selected || isAnalyzing.value) return
-  isAnalyzing.value = true
-  statusMessage.value = '正在理解这条观察……'
-
-  const candidates = orderedIdeas.value
-    .filter((item) => item.id !== selected.id)
-    .slice(0, 20)
-
-  try {
-    const result = await requestObservationAnalysis({ observation: selected, candidates })
-    const analysis: ObservationAnalysis = {
-      observationId: selected.id,
-      generatedAt: new Date().toISOString(),
-      engine: 'llm',
-      ...result.analysis,
-    }
-    workspace.value.analyses[String(selected.id)] = analysis
-
-    const now = new Date().toISOString()
-    for (const item of result.relations) {
-      const target = candidates.find((candidate) => candidate.id === item.targetId)
-      if (!target) continue
-      const relation: ObservationRelation = {
-        id: relationId(selected.id, target.id),
-        sourceId: selected.id,
-        targetId: target.id,
-        type: item.type,
-        reason: item.reason,
-        evidenceFromSource: item.evidenceFromSource,
-        evidenceFromTarget: item.evidenceFromTarget,
-        sharedTerms: item.sharedTerms,
-        status: 'suggested',
-        engine: 'llm',
-        createdAt: now,
-        updatedAt: now,
-      }
-      workspace.value = upsertRelation(workspace.value, relation)
-    }
-    persist()
-    statusMessage.value = result.relations.length
-      ? `分析完成，找到 ${result.relations.length} 条待你判断的关联线索。`
-      : '分析完成。目前没有足够依据推荐历史关联，这也是正常结果。'
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : 'AI 服务暂时不可用。'
-    applyLocalAnalysis(`大模型暂不可用：${reason} 已使用本地规则提供基础线索；这些结果不是 AI 结论。`)
-  } finally {
-    isAnalyzing.value = false
-  }
-}
+  
+    
 
 function changeRelationStatus(target: ObservationSource, status: RelationStatus): void {
   const selected = selectedObservation.value
@@ -602,11 +799,21 @@ function relationTypeLabel(type: ObservationRelation['type'] | LocalRelationCand
               </div>
             </div>
             <div class="obw-header-actions">
+              <button
+                class="obw-secondary-button obw-auto-toggle"
+                type="button"
+                :aria-pressed="autoAnalyzeEnabled"
+                @click="toggleAutoAnalyze"
+              >
+              <span>{{ autoAnalyzeEnabled ? '✦' : '○' }}</span>
+              自动理解{{ autoAnalyzeEnabled ? '已开启' : '已关闭' }}
+              </button>
               <button class="obw-secondary-button" type="button" @click="isComposerOpen = !isComposerOpen">
                 <span>＋</span> 记录观察
               </button>
               <button class="obw-close" type="button" aria-label="关闭观察工作台" @click="isOpen = false">×</button>
             </div>
+
           </header>
 
           <nav class="obw-main-tabs" aria-label="工作台视图切换">
@@ -708,7 +915,13 @@ function relationTypeLabel(type: ObservationRelation['type'] | LocalRelationCand
                     </div>
                     <button class="obw-primary-button" type="button" :disabled="isAnalyzing" @click="analyzeSelected">
                       <span v-if="isAnalyzing" class="obw-spinner"></span>
-                      {{ isAnalyzing ? '正在分析…' : '✦ 理解这条观察' }}
+                      {{
+                        selectedAnalysisStatus === 'pending' ? '排队中…' :
+                        selectedAnalysisStatus === 'analyzing' ? '正在分析…' :
+                        selectedAnalysisStatus === 'local-fallback' ? '重试大模型分析' :
+                        selectedAnalysisStatus === 'failed' ? '重试分析' :
+                        selectedAnalysis ? '重新分析' : '立即分析'  
+                      }}
                     </button>
                   </div>
 
@@ -739,10 +952,26 @@ function relationTypeLabel(type: ObservationRelation['type'] | LocalRelationCand
                   </div>
                   <div v-else class="obw-analysis-placeholder">
                     <span class="obw-placeholder-orbit">✧</span>
-                    <strong>先理解这条观察，再决定是否寻找联系。</strong>
-                    <span>点击上方按钮。若模型服务尚未配置，会暂时使用本地规则给出基础线索。</span>
+                    <strong>
+                      {{
+                        selectedAnalysisStatus === 'pending' ? '观察已保存，正在等待自动理解。' :
+                        selectedAnalysisStatus === 'analyzing' ? 'AI 正在理解这条观察…' :
+                        selectedAnalysisStatus === 'failed' ? '分析暂未完成，可以再次尝试。' :
+                        '这条观察尚未分析。'
+                      }}    
+                    </strong>
+                    <span>
+                      {{ autoAnalyzeEnabled
+                        ? '自动理解已开启；新观察保存后会自动开始分析。'
+                        : '自动理解已关闭；你仍可手动点击上方按钮。' }} 
+                    </span>
                   </div>
-                  <p class="obw-privacy-note">点击大模型分析时，当前记录和最多 20 条近期历史记录会发送到你配置的模型服务。未点击前不会发送。</p>
+                  <p v-if="selectedAnalysisStatus === 'local-fallback'" class="obw-privacy-note">
+                    本次大模型请求未成功，当前展示的是本地规则初筛结果；点击“重试大模型分析”可以重新请求模型。
+                  </p>    
+                  <p class="obw-privacy-note">
+                    自动理解开启时，新记录会自动将当前观察和最多 20 条近期历史观察发送到你配置的模型服务；关闭后不会自动发起新的模型请求。手动点击分析仍会发送当前观察及候选历史记录。原始记录不会被 AI 自动改写。
+                  </p>
                 </section>
 
                 <section class="obw-relations-section">
@@ -947,6 +1176,16 @@ function relationTypeLabel(type: ObservationRelation['type'] | LocalRelationCand
 </template>
 
 <style scoped>
+.obw-auto-toggle[aria-pressed="true"] {
+  border-color: rgba(153, 133, 255, 0.58);
+  background: rgba(138, 116, 255, 0.14);
+  color: rgba(235, 230, 255, 0.98);
+}
+
+.obw-auto-toggle[aria-pressed="false"] {
+  opacity: 0.82;
+}
+
 .obw-launcher {
   position: fixed;
   z-index: 5000;
