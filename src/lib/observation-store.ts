@@ -53,6 +53,7 @@ function normalizeThemeEvent(value: unknown): ThemeEvent | null {
     'observation-added',
     'status-changed',
     'duplicate-merged',
+    'details-updated',
   ])
   const type = String(value.type) as ThemeEventType
   if (!allowedTypes.has(type)) return null
@@ -373,6 +374,41 @@ export function extendProblemTheme(
         `新增观察：${observationText.trim().slice(0, 72) || `观察 #${observationId}`}。该观察与主题成员存在已确认关联。`,
         { observationId },
       ),
+    ],
+  }
+  const themes = [...state.themes]
+  themes[themeIndex] = nextTheme
+  return { ...state, themes }
+}
+
+export function updateProblemThemeDetails(
+  state: ObservationWorkspaceState,
+  themeId: string,
+  input: Pick<ProblemTheme, 'title' | 'description'>,
+): ObservationWorkspaceState {
+  const title = input.title.trim()
+  const description = input.description.trim()
+  if (!title) return state
+
+  const themeIndex = state.themes.findIndex((item) => item.id === themeId)
+  if (themeIndex < 0) return state
+
+  const theme = state.themes[themeIndex]
+  if (theme.title === title && theme.description === description) return state
+
+  const now = new Date().toISOString()
+  const changes: string[] = []
+  if (theme.title !== title) changes.push(`名称调整为「${title}」`)
+  if (theme.description !== description) changes.push('主题描述已更新')
+
+  const nextTheme: ProblemTheme = {
+    ...theme,
+    title,
+    description,
+    updatedAt: now,
+    events: [
+      ...theme.events,
+      createThemeEvent('details-updated', changes.join('；') + '。'),
     ],
   }
   const themes = [...state.themes]

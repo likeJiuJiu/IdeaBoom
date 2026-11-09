@@ -55,6 +55,7 @@ export type ThemeEventType =
   | 'observation-added'
   | 'status-changed'
   | 'duplicate-merged'
+  | 'details-updated'
 
 export interface ThemeEvent {
   id: string

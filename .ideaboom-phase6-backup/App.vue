@@ -1,0 +1,1170 @@
+<script setup lang="ts">
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { NebulaEngine } from './lib/nebula'
+import { SpiralGalaxyLayer } from './lib/spiral-galaxy'
+import ObservationWorkspace from './components/ObservationWorkspace.vue'
+import ThemeDetailSpace from './components/ThemeDetailSpace.vue'
+import type { ObservationAnalysis, ObservationRelation, ObservationSource, ProblemTheme } from './types/observation'
+import { loadObservationWorkspace } from './lib/observation-store'
+
+type Idea = {
+  id: number
+  text: string
+  x: number
+  y: number
+  color: string
+  createdAt: string
+  /** 用户在一次回响/共振中亲自写下的新想法，保留其来源。 */
+  parentIdeaIds?: number[]
+  sourceEventId?: string
+}
+
+type ResonanceType = 'evolution' | 'cross-domain'
+type EchoRecord = { ideaId: number; shownAt: number }
+type ResonanceRecord = {
+  pairKey: string
+  ideaIds: [number, number]
+  shownAt: number
+  type: ResonanceType
+}
+type EncounterHistory = {
+  echoes: EchoRecord[]
+  resonances: ResonanceRecord[]
+  cooldowns: Record<string, number>
+}
+type ResonanceCandidate = {
+  a: Idea
+  b: Idea
+  type: ResonanceType
+  similarity: number
+  score: number
+  gapMs: number
+}
+
+type ThemeDetailPayload = {
+  theme: ProblemTheme
+  ideas: ObservationSource[]
+  relations: ObservationRelation[]
+  analyses: Record<string, ObservationAnalysis>
+}
+
+const STORAGE_KEY = 'idea-nebula-ideas-v1'
+const HISTORY_KEY = 'idea-nebula-encounter-history-demo-v1'
+const COLORS = ['#a89bff', '#77e6ff', '#d1a0ff', '#8fafff', '#8df1d3', '#f2b7ff']
+
+/**
+ * 演示模式：先用秒级时间验证完整交互。
+ * 产品稳定后再统一调整为正式值：回响 7 天、共振最小时间跨度 14 天、冷却 21 天。
+ */
+const ENCOUNTER_RULES = {
+  minIdeaAgeMs: 15_000,              // 想法创建满 15 秒才进入候选池
+  minPairGapMs: 30_000,              // 双星的创建时间至少相隔 30 秒
+  ideaCooldownMs: 30_000,            // 同一想法参与特殊事件后冷却 30 秒
+  echoWindowMs: 5 * 60_000,          // 时间回响滚动窗口
+  maxEchoesPerWindow: 3,             // 5 分钟最多 3 次
+  resonanceWindowMs: 5 * 60_000,     // 双星共振滚动窗口
+  maxResonancesPerWindow: 2,         // 5 分钟最多 2 次
+  minTextLength: 6,
+}
+
+const sampleIdeas: Idea[] = [
+  { id: 101, text: '为什么有些工具越高效，人反而越焦虑？', x: 38, y: 33, color: '#a89bff', createdAt: '2026-10-20T09:00:00.000Z' },
+  { id: 102, text: '模糊的念头，也值得被留下。', x: 55, y: 26, color: '#77e6ff', createdAt: '2026-10-21T13:30:00.000Z' },
+  { id: 103, text: '如果不急着给答案，问题会发生什么变化？', x: 73, y: 36, color: '#d1a0ff', createdAt: '2026-10-22T17:15:00.000Z' },
+  { id: 104, text: '有些灵感只在两个毫不相关的瞬间相遇时出现。', x: 46, y: 47, color: '#8fafff', createdAt: '2026-10-23T08:20:00.000Z' },
+  { id: 105, text: '记录生活，是不是也是在训练自己如何观察？', x: 66, y: 51, color: '#8df1d3', createdAt: '2026-10-24T15:40:00.000Z' },
+  { id: 106, text: '有时不是没有想法，只是它还没长成语言。', x: 82, y: 57, color: '#f2b7ff', createdAt: '2026-10-25T10:10:00.000Z' },
+  { id: 107, text: '当所有事情都能被量化，什么还值得慢慢做？', x: 36, y: 64, color: '#77e6ff', createdAt: '2026-10-26T12:00:00.000Z' },
+  { id: 108, text: '也许创意不是想出来的，而是等到它们相遇。', x: 58, y: 72, color: '#a89bff', createdAt: '2026-10-27T06:45:00.000Z' },
+  { id: 109, text: '一个好问题，能陪人走多远？', x: 77, y: 74, color: '#8df1d3', createdAt: '2026-10-28T07:15:00.000Z' },
+]
+
+function loadIdeas(): Idea[] {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY)
+    if (raw) {
+      const parsed = JSON.parse(raw) as Idea[]
+      if (Array.isArray(parsed) && parsed.every((item) => item && typeof item.text === 'string')) {
+        return parsed.map((item) => ({
+          ...item,
+          id: Number(item.id),
+          x: Number.isFinite(Number(item.x)) ? Number(item.x) : 50,
+          y: Number.isFinite(Number(item.y)) ? Number(item.y) : 50,
+          color: typeof item.color === 'string' ? item.color : COLORS[0],
+          createdAt: typeof item.createdAt === 'string' ? item.createdAt : new Date(0).toISOString(),
+          parentIdeaIds: Array.isArray(item.parentIdeaIds) ? item.parentIdeaIds.map(Number) : undefined,
+        }))
+      }
+    }
+  } catch {
+    // 本地存储不可用或数据损坏时，回落到示例星云
+  }
+  return sampleIdeas.map((idea) => ({ ...idea }))
+}
+
+function emptyHistory(): EncounterHistory {
+  return { echoes: [], resonances: [], cooldowns: {} }
+}
+
+function loadEncounterHistory(): EncounterHistory {
+  try {
+    const raw = localStorage.getItem(HISTORY_KEY)
+    if (!raw) return emptyHistory()
+    const value = JSON.parse(raw) as Partial<EncounterHistory>
+    return {
+      echoes: Array.isArray(value.echoes)
+        ? value.echoes.filter((item): item is EchoRecord => Number.isFinite(item?.ideaId) && Number.isFinite(item?.shownAt))
+        : [],
+      resonances: Array.isArray(value.resonances)
+        ? value.resonances.filter((item): item is ResonanceRecord =>
+            typeof item?.pairKey === 'string'
+            && Array.isArray(item.ideaIds)
+            && item.ideaIds.length === 2
+            && Number.isFinite(item.shownAt)
+            && (item.type === 'evolution' || item.type === 'cross-domain'),
+          )
+        : [],
+      cooldowns: value.cooldowns && typeof value.cooldowns === 'object' ? value.cooldowns : {},
+    }
+  } catch {
+    return emptyHistory()
+  }
+}
+
+function random(min: number, max: number) {
+  return min + Math.random() * (max - min)
+}
+function createdTime(idea: Idea): number {
+  const value = Date.parse(idea.createdAt)
+  return Number.isFinite(value) ? value : 0
+}
+function pairKey(aId: number, bId: number): string {
+  return [aId, bId].sort((a, b) => a - b).join(':')
+}
+function isUsableIdea(idea: Idea): boolean {
+  return idea.text.trim().length >= ENCOUNTER_RULES.minTextLength
+}
+function countRecent<T extends { shownAt: number }>(items: T[], now: number, windowMs: number): number {
+  return items.filter((item) => now - item.shownAt >= 0 && now - item.shownAt < windowMs).length
+}
+function isCoolingDown(history: EncounterHistory, ideaId: number, now: number): boolean {
+  return (history.cooldowns[String(ideaId)] ?? 0) > now
+}
+
+// 中文轻量 n-gram：只负责筛候选，不负责解释想法或判断“有没有价值”。
+const STOP_TERMS = new Set([
+  '为什么', '怎么', '是不是', '一个', '有些', '我们', '自己', '因为', '所以', '可能', '如果', '总是',
+  '感觉', '事情', '时候', '东西', '可以', '没有', '什么', '还是', '怎样', '如何', '已经', '的话',
+  '这个', '那个', '就是', '其实', '有时', '时候', '是否', '比较', '还是', '然后', '但是', '而且',
+])
+function textTerms(input: string): Set<string> {
+  const text = input.toLowerCase().replace(/[\p{P}\p{S}\s]+/gu, ' ').trim()
+  const terms = new Set<string>()
+  const chunks = text.match(/[\u3400-\u9fff]+|[a-z0-9]{2,}/g) ?? []
+  for (const chunk of chunks) {
+    if (/^[a-z0-9]+$/.test(chunk)) {
+      if (chunk.length > 1 && !STOP_TERMS.has(chunk)) terms.add(chunk)
+      continue
+    }
+    if (chunk.length === 2) {
+      if (!STOP_TERMS.has(chunk)) terms.add(chunk)
+      continue
+    }
+    for (let size = 2; size <= 3; size += 1) {
+      for (let index = 0; index <= chunk.length - size; index += 1) {
+        const part = chunk.slice(index, index + size)
+        if (!STOP_TERMS.has(part)) terms.add(part)
+      }
+    }
+  }
+  return terms
+}
+function termSimilarity(a: Idea, b: Idea): { similarity: number; shared: number } {
+  const termsA = textTerms(a.text)
+  const termsB = textTerms(b.text)
+  if (!termsA.size || !termsB.size) return { similarity: 0, shared: 0 }
+  let shared = 0
+  for (const term of termsA) if (termsB.has(term)) shared += 1
+  const union = termsA.size + termsB.size - shared
+  return { similarity: union ? shared / union : 0, shared }
+}
+
+function findTimeEchoCandidate(ideas: Idea[], history: EncounterHistory, now: number): Idea | null {
+  if (countRecent(history.echoes, now, ENCOUNTER_RULES.echoWindowMs) >= ENCOUNTER_RULES.maxEchoesPerWindow) return null
+  const recentlyShown = new Set(
+    history.echoes
+      .filter((item) => now - item.shownAt < ENCOUNTER_RULES.echoWindowMs)
+      .map((item) => item.ideaId),
+  )
+  const eligible = ideas.filter((idea) => {
+    const age = now - createdTime(idea)
+    return isUsableIdea(idea)
+      && age >= ENCOUNTER_RULES.minIdeaAgeMs
+      && !recentlyShown.has(idea.id)
+      && !isCoolingDown(history, idea.id, now)
+  })
+  // 优先让久未出现、保存时间更早的想法重新浮现，不使用纯随机抽取。
+  eligible.sort((a, b) => createdTime(a) - createdTime(b))
+  return eligible[0] ?? null
+}
+
+function findResonanceCandidate(ideas: Idea[], history: EncounterHistory, now: number): ResonanceCandidate | null {
+  if (countRecent(history.resonances, now, ENCOUNTER_RULES.resonanceWindowMs) >= ENCOUNTER_RULES.maxResonancesPerWindow) return null
+  const eligible = ideas.filter((idea) =>
+    isUsableIdea(idea)
+    && now - createdTime(idea) >= ENCOUNTER_RULES.minIdeaAgeMs
+    && !isCoolingDown(history, idea.id, now),
+  )
+  const previousPairs = new Set(history.resonances.map((item) => item.pairKey))
+  const candidates: ResonanceCandidate[] = []
+
+  for (let i = 0; i < eligible.length; i += 1) {
+    for (let j = i + 1; j < eligible.length; j += 1) {
+      const a = eligible[i]
+      const b = eligible[j]
+      const gapMs = Math.abs(createdTime(a) - createdTime(b))
+      if (gapMs < ENCOUNTER_RULES.minPairGapMs) continue
+      if (previousPairs.has(pairKey(a.id, b.id))) continue
+      const { similarity, shared } = termSimilarity(a, b)
+
+      // 太相似容易重复；完全没有可识别线索也不强行配对。
+      let type: ResonanceType
+      let bandScore: number
+      if (similarity >= 0.16 && similarity <= 0.72) {
+        type = 'evolution'
+        bandScore = 1 - Math.abs(similarity - 0.40) / 0.40
+      } else if (similarity >= 0.035 && similarity < 0.16 && shared >= 1) {
+        type = 'cross-domain'
+        bandScore = 1 - Math.abs(similarity - 0.095) / 0.095
+      } else {
+        continue
+      }
+      const timeBonus = Math.min(gapMs / (90 * 24 * 60 * 60 * 1000), 1) * 0.18
+      const score = bandScore * 0.82 + timeBonus
+      candidates.push({ a, b, type, similarity, score, gapMs })
+    }
+  }
+
+  // 候选质量优先；分数相同时优先时间跨度较大的组合。
+  candidates.sort((a, b) => b.score - a.score || b.gapMs - a.gapMs)
+  return candidates[0] ?? null
+}
+
+const ideas = ref<Idea[]>(loadIdeas())
+const encounterHistory = ref<EncounterHistory>(loadEncounterHistory())
+const shell = ref<HTMLElement | null>(null)
+const canvas = ref<HTMLCanvasElement | null>(null)
+const galaxyCanvas = ref<HTMLCanvasElement | null>(null)
+const worldEl = ref<HTMLElement | null>(null)
+const parallaxEl = ref<HTMLElement | null>(null)
+const motionEnabled = ref(!(window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false))
+const showLabels = ref(true)
+const composerOpen = ref(false)
+const encounterMenuOpen = ref(false)
+const encounterOpen = ref(false)
+const echoOpen = ref(false)
+const draftIdea = ref('')
+const encounterNote = ref('')
+const echoNote = ref('')
+const activeIdea = ref<Idea | null>(null)
+const editText = ref('')
+const echoIdeaId = ref<number | null>(null)
+const isEditing = ref(false)
+const encounterPair = ref<[number, number] | null>(null)
+const resonanceType = ref<ResonanceType | null>(null)
+const toastMessage = ref('')
+const toastVisible = ref(false)
+const panning = ref(false)
+const zoomLabel = ref(100)
+const bornIds = ref<number[]>([])
+const nowTick = ref(Date.now())
+const ideaCount = computed(() => ideas.value.length)
+const encounterIdeas = computed(() => {
+  if (!encounterPair.value) return []
+  return encounterPair.value
+    .map((id) => ideas.value.find((idea) => idea.id === id))
+    .filter((idea): idea is Idea => Boolean(idea))
+})
+const echoIdea = computed(() => ideas.value.find((idea) => idea.id === echoIdeaId.value) ?? null)
+const timeEchoCandidate = computed(() => findTimeEchoCandidate(ideas.value, encounterHistory.value, nowTick.value))
+const resonanceCandidate = computed(() => findResonanceCandidate(ideas.value, encounterHistory.value, nowTick.value))
+const recentEchoCount = computed(() => countRecent(encounterHistory.value.echoes, nowTick.value, ENCOUNTER_RULES.echoWindowMs))
+const recentResonanceCount = computed(() => countRecent(encounterHistory.value.resonances, nowTick.value, ENCOUNTER_RULES.resonanceWindowMs))
+let engine: NebulaEngine | null = null
+let galaxyLayer: SpiralGalaxyLayer | null = null
+let toastTimer: number | undefined
+let encounterTimer: number | undefined
+let closePairTimer: number | undefined
+let tickerTimer: number | undefined
+let activeResonanceKey: string | null = null
+const confirmedRelationBridge = ref<Array<{ sourceId: number; targetId: number; type: string }>>([])
+const problemThemeBridge = ref<Array<{ id: string; title: string; observationIds: number[]; status: 'observing' | 'exploring' | 'paused' }>>([])
+const themeDetail = ref<ThemeDetailPayload | null>(null)
+
+// Canvas 的主题椭圆由透明 DOM 命中层承接点击。尺寸与 nebula.ts 中的椭圆边界规则保持一致。
+const themeHitTargets = computed(() => problemThemeBridge.value.flatMap((theme) => {
+  const members = ideas.value.filter((idea) => theme.observationIds.includes(idea.id))
+  if (members.length < 2) return []
+  const xs = members.map((idea) => idea.x)
+  const ys = members.map((idea) => idea.y)
+  const minX = Math.min(...xs)
+  const maxX = Math.max(...xs)
+  const minY = Math.min(...ys)
+  const maxY = Math.max(...ys)
+  return [{
+    id: theme.id,
+    title: theme.title,
+    style: {
+      left: String((minX + maxX) / 2) + '%',
+      top: String((minY + maxY) / 2) + '%',
+      width: 'max(232px, calc(' + (maxX - minX) + '% + 168px))',
+      height: 'max(176px, calc(' + (maxY - minY) + '% + 128px))',
+    },
+  }]
+}))
+const bornTimers = new Map<number, number>()
+const activePointers = new Map<number, { x: number; y: number }>()
+let pinchDistance = 0
+
+function localPoint(event: PointerEvent | WheelEvent) {
+  const rect = shell.value?.getBoundingClientRect()
+  return { x: event.clientX - (rect?.left ?? 0), y: event.clientY - (rect?.top ?? 0) }
+}
+function syncEngine() {
+  engine?.setIdeas(ideas.value.map((idea) => ({ id: idea.id, x: idea.x, y: idea.y, color: idea.color })))
+  engine?.refreshNodes()
+}
+
+function syncConfirmedObservationRelations(relations: Array<{ sourceId: number; targetId: number; type: string }>): void {
+  confirmedRelationBridge.value = relations
+  engine?.setConfirmedRelations(relations)
+}
+
+function syncProblemThemes(themes: Array<{ id: string; title: string; observationIds: number[]; status: 'observing' | 'exploring' | 'paused' }>): void {
+  problemThemeBridge.value = themes
+  engine?.setProblemThemes(themes)
+}
+
+function openThemeSpace(themeId: string): void {
+  const state = loadObservationWorkspace()
+  const theme = state.themes.find((item) => item.id === themeId)
+  if (!theme) {
+    notify('这个主题暂时无法读取，请关闭后重新打开观察工作台。')
+    return
+  }
+  const memberIds = new Set(theme.observationIds)
+  const themeIdeas = ideas.value.filter((idea) => memberIds.has(idea.id))
+  const relations = state.relations.filter((relation) =>
+    relation.status === 'confirmed'
+    && memberIds.has(relation.sourceId)
+    && memberIds.has(relation.targetId),
+  )
+  const analyses: Record<string, ObservationAnalysis> = {}
+  for (const id of theme.observationIds) {
+    const analysis = state.analyses[String(id)]
+    if (analysis) analyses[String(id)] = analysis
+  }
+  themeDetail.value = { theme, ideas: themeIdeas, relations, analyses }
+}
+
+function closeThemeSpace(): void {
+  themeDetail.value = null
+}
+
+function openIdeaFromTheme(id: number): void {
+  const idea = ideas.value.find((item) => item.id === id)
+  closeThemeSpace()
+  if (idea) openIdea(idea)
+}
+function markBorn(id: number) {
+  bornIds.value = [...bornIds.value, id]
+  const timer = window.setTimeout(() => {
+    bornIds.value = bornIds.value.filter((item) => item !== id)
+    bornTimers.delete(id)
+  }, 2400)
+  bornTimers.set(id, timer)
+}
+function notify(message: string) {
+  toastMessage.value = message
+  toastVisible.value = true
+  if (toastTimer) window.clearTimeout(toastTimer)
+  toastTimer = window.setTimeout(() => (toastVisible.value = false), 2600)
+}
+function pruneExpiredCooldowns(now = Date.now()) {
+  for (const [id, until] of Object.entries(encounterHistory.value.cooldowns)) {
+    if (until <= now) delete encounterHistory.value.cooldowns[id]
+  }
+}
+function recordEchoShown(idea: Idea) {
+  const now = Date.now()
+  pruneExpiredCooldowns(now)
+  encounterHistory.value.echoes.push({ ideaId: idea.id, shownAt: now })
+  encounterHistory.value.cooldowns[String(idea.id)] = now + ENCOUNTER_RULES.ideaCooldownMs
+}
+function recordResonanceShown(candidate: ResonanceCandidate) {
+  const now = Date.now()
+  const key = pairKey(candidate.a.id, candidate.b.id)
+  if (encounterHistory.value.resonances.some((item) => item.pairKey === key)) return
+  pruneExpiredCooldowns(now)
+  encounterHistory.value.resonances.push({
+    pairKey: key,
+    ideaIds: [candidate.a.id, candidate.b.id],
+    shownAt: now,
+    type: candidate.type,
+  })
+  encounterHistory.value.cooldowns[String(candidate.a.id)] = now + ENCOUNTER_RULES.ideaCooldownMs
+  encounterHistory.value.cooldowns[String(candidate.b.id)] = now + ENCOUNTER_RULES.ideaCooldownMs
+}
+
+// ------------------------------------------------------------------ 相机交互
+function onPointerDown(event: PointerEvent) {
+  if (event.pointerType === 'mouse' && event.button !== 0) return
+  const target = event.target as HTMLElement | null
+  if (target?.closest('button, a, textarea, input, .glass-modal, .topbar, .bottom-bar, .view-hud, .encounter-menu-panel')) return
+  const point = localPoint(event)
+  activePointers.set(event.pointerId, point)
+  if (activePointers.size === 1) {
+    engine?.beginPan(point.x, point.y)
+    panning.value = true
+  } else if (activePointers.size === 2) {
+    engine?.endPan()
+    panning.value = false
+    pinchDistance = pointerSpread()
+  }
+  event.preventDefault()
+}
+function pointerSpread() {
+  const points = Array.from(activePointers.values())
+  if (points.length < 2) return 0
+  return Math.hypot(points[0].x - points[1].x, points[0].y - points[1].y)
+}
+function onPointerMove(event: PointerEvent) {
+  const point = localPoint(event)
+  if (activePointers.has(event.pointerId)) activePointers.set(event.pointerId, point)
+  engine?.setPointer(point.x, point.y, true)
+  if (activePointers.size >= 2) {
+    const points = Array.from(activePointers.values())
+    const center = points.reduce((acc, item) => ({ x: acc.x + item.x / points.length, y: acc.y + item.y / points.length }), { x: 0, y: 0 })
+    const spread = pointerSpread()
+    if (pinchDistance > 0 && spread > 0) engine?.zoomAt(center.x, center.y, Math.min(1.6, Math.max(0.62, spread / pinchDistance)))
+    pinchDistance = spread
+    return
+  }
+  if (panning.value) engine?.panTo(point.x, point.y)
+}
+function onPointerUp(event: PointerEvent) {
+  activePointers.delete(event.pointerId)
+  if (activePointers.size === 0) {
+    engine?.endPan()
+    engine?.setPointer(-10000, -10000, false)
+    panning.value = false
+  }
+}
+function onPointerLeave() {
+  if (panning.value) {
+    engine?.endPan()
+    panning.value = false
+  }
+  activePointers.clear()
+  engine?.setPointer(-10000, -10000, false)
+}
+function onWheel(event: WheelEvent) {
+  if (event.ctrlKey) return
+  if ((event.target as HTMLElement | null)?.closest('.glass-modal')) return
+  event.preventDefault()
+  const point = localPoint(event)
+  const delta = event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? 100 : 1)
+  engine?.zoomAt(point.x, point.y, Math.exp(-delta * 0.0016))
+}
+
+// ------------------------------------------------------------------ 想法操作
+function openComposer() {
+  encounterMenuOpen.value = false
+  draftIdea.value = ''
+  composerOpen.value = true
+}
+function addIdea(text: string, x?: number, y?: number, source?: { parentIdeaIds?: number[]; sourceEventId?: string }): Idea | null {
+  const trimmed = text.trim()
+  if (!trimmed) return null
+  const idea: Idea = {
+    id: Date.now() + Math.floor(Math.random() * 1000),
+    text: trimmed,
+    x: x ?? random(30, 80),
+    y: y ?? random(28, 78),
+    color: COLORS[Math.floor(Math.random() * COLORS.length)],
+    createdAt: new Date().toISOString(),
+    parentIdeaIds: source?.parentIdeaIds,
+    sourceEventId: source?.sourceEventId,
+  }
+  ideas.value.push(idea)
+  return idea
+}
+function afterIdeaAdded(idea: Idea, message: string) {
+  markBorn(idea.id)
+  notify(message)
+  nextTick(() => {
+    syncEngine()
+    engine?.spawn(idea.id)
+  })
+}
+function submitIdea() {
+  const idea = addIdea(draftIdea.value)
+  if (!idea) {
+    notify('先写下一点点想法就好。')
+    return
+  }
+  composerOpen.value = false
+  draftIdea.value = ''
+  afterIdeaAdded(idea, '一颗新的光点，正在凝聚。')
+}
+function addObservationFromWorkspace(text: string) {
+  const idea = addIdea(text)
+  if (!idea) return
+  afterIdeaAdded(idea, '观察已保存，已经加入星云。')
+}
+function openIdea(idea: Idea) {
+  activeIdea.value = idea
+  editText.value = idea.text
+  isEditing.value = false
+  engine?.setFocus(idea.id)
+}
+function closeIdea() {
+  activeIdea.value = null
+  isEditing.value = false
+  engine?.setFocus(null)
+}
+function saveIdeaEdit() {
+  if (!activeIdea.value) return
+  const text = editText.value.trim()
+  if (!text) {
+    notify('想法暂时不能为空。')
+    return
+  }
+  const target = ideas.value.find((item) => item.id === activeIdea.value?.id)
+  if (target) target.text = text
+  activeIdea.value = target ? { ...target } : null
+  isEditing.value = false
+  notify('已保存这颗光点。')
+}
+function deleteIdea() {
+  if (!activeIdea.value) return
+  const removedId = activeIdea.value.id
+  ideas.value = ideas.value.filter((item) => item.id !== removedId)
+  activeIdea.value = null
+  isEditing.value = false
+  engine?.setFocus(null)
+  nextTick(() => syncEngine())
+  notify('这颗光点已离开星云。')
+}
+
+// ------------------------------------------------------------------ 时间回响
+function toggleEncounterMenu() {
+  encounterMenuOpen.value = !encounterMenuOpen.value
+}
+function startTimeEcho() {
+  encounterMenuOpen.value = false
+  const candidate = findTimeEchoCandidate(ideas.value, encounterHistory.value, Date.now())
+  if (!candidate) {
+    if (ideas.value.length === 0) notify('先留下一些想法，时间才能带它们回来。')
+    else if (recentEchoCount.value >= ENCOUNTER_RULES.maxEchoesPerWindow) notify('这段时间已经回响过几次了，让星云安静一会儿。')
+    else notify('还没有达到 15 秒沉淀时间的旧想法，稍后再来看看。')
+    return
+  }
+  echoIdeaId.value = candidate.id
+  echoNote.value = ''
+  recordEchoShown(candidate)
+  engine?.setFocus(candidate.id)
+  echoOpen.value = true
+}
+function closeTimeEcho() {
+  echoOpen.value = false
+  engine?.setFocus(null)
+  window.setTimeout(() => {
+    if (!echoOpen.value) echoIdeaId.value = null
+  }, 420)
+}
+function saveEchoNote() {
+  const text = echoNote.value.trim()
+  if (!text) {
+    notify('可以不留下新的想法，这次回响也已经完成。')
+    closeTimeEcho()
+    return
+  }
+  const source = echoIdea.value
+  if (!source) {
+    closeTimeEcho()
+    return
+  }
+  const idea = addIdea(text, Math.max(18, Math.min(84, source.x + random(-8, 8))), Math.max(24, Math.min(82, source.y + random(-8, 8))), {
+    parentIdeaIds: [source.id],
+    sourceEventId: `echo-${source.id}-${Date.now()}`,
+  })
+  closeTimeEcho()
+  if (idea) afterIdeaAdded(idea, '新的念头已留下，并保留了它的时间来源。')
+}
+
+// ------------------------------------------------------------------ 双星共振
+function isInEncounter(id: number) {
+  return Boolean(encounterPair.value?.includes(id))
+}
+function openResonanceDialog() {
+  if (!encounterPair.value || encounterOpen.value) return
+  const [aId, bId] = encounterPair.value
+  const a = ideas.value.find((idea) => idea.id === aId)
+  const b = ideas.value.find((idea) => idea.id === bId)
+  if (!a || !b) return
+  const candidate: ResonanceCandidate = {
+    a,
+    b,
+    type: resonanceType.value ?? 'cross-domain',
+    similarity: termSimilarity(a, b).similarity,
+    score: 0,
+    gapMs: Math.abs(createdTime(a) - createdTime(b)),
+  }
+  recordResonanceShown(candidate)
+  encounterOpen.value = true
+}
+function startResonance() {
+  encounterMenuOpen.value = false
+  if (ideas.value.length < 2) {
+    notify('再留下一个想法，就可以让它们共振了。')
+    openComposer()
+    return
+  }
+  const candidate = findResonanceCandidate(ideas.value, encounterHistory.value, Date.now())
+  if (!candidate) {
+    if (recentResonanceCount.value >= ENCOUNTER_RULES.maxResonancesPerWindow) {
+      notify('双星共振需要稀缺一点，过一会儿再来。')
+    } else {
+      notify('暂时没有足够条件的组合：两颗想法需各自沉淀 15 秒、创建时间相隔至少 30 秒，且不能重复相遇。')
+    }
+    return
+  }
+  encounterPair.value = [candidate.a.id, candidate.b.id]
+  resonanceType.value = candidate.type
+  activeResonanceKey = pairKey(candidate.a.id, candidate.b.id)
+  encounterNote.value = ''
+  encounterOpen.value = false
+  if (encounterTimer) window.clearTimeout(encounterTimer)
+  if (closePairTimer) window.clearTimeout(closePairTimer)
+
+  if (!engine || !motionEnabled.value) {
+    openResonanceDialog()
+    return
+  }
+  engine.beginEncounter(candidate.a.id, candidate.b.id)
+  // 动画被暂停或中断时仍然打开内容；重复回调由 openResonanceDialog 防止。
+  encounterTimer = window.setTimeout(() => openResonanceDialog(), 2400)
+}
+function saveEncounterNote() {
+  const text = encounterNote.value.trim()
+  const pair = encounterPair.value
+  if (!text) {
+    notify('可以先让它们待在一起，不必急着得出答案。')
+    closeEncounter()
+    return
+  }
+  const first = ideas.value.find((idea) => idea.id === pair?.[0])
+  const second = ideas.value.find((idea) => idea.id === pair?.[1])
+  const x = first && second ? (first.x + second.x) / 2 : random(30, 80)
+  const y = first && second ? (first.y + second.y) / 2 : random(30, 75)
+  const idea = addIdea(
+    text,
+    Math.max(18, Math.min(84, x + random(-4, 4))),
+    Math.max(24, Math.min(82, y + random(-4, 4))),
+    {
+      parentIdeaIds: [first?.id, second?.id].filter((id): id is number => typeof id === 'number'),
+      sourceEventId: activeResonanceKey ? `resonance-${activeResonanceKey}` : `resonance-${Date.now()}`,
+    },
+  )
+  closeEncounter()
+  if (idea) afterIdeaAdded(idea, '一颗新的光点诞生了，来源由你亲自确认。')
+}
+function closeEncounter() {
+  encounterOpen.value = false
+  engine?.cancelEncounter()
+  if (encounterTimer) window.clearTimeout(encounterTimer)
+  encounterTimer = undefined
+  if (closePairTimer) window.clearTimeout(closePairTimer)
+  closePairTimer = window.setTimeout(() => {
+    if (!encounterOpen.value) {
+      encounterPair.value = null
+      resonanceType.value = null
+      activeResonanceKey = null
+    }
+  }, 500)
+}
+
+// ------------------------------------------------------------------ 视图控制
+function toggleMotion() {
+  motionEnabled.value = !motionEnabled.value
+  notify(motionEnabled.value ? '星云重新流动了。' : '已暂停动态效果。')
+}
+function resetView() {
+  engine?.resetView()
+  notify('视角已回到星云中央。')
+}
+function closeOverlays() {
+  if (composerOpen.value) composerOpen.value = false
+  if (activeIdea.value) closeIdea()
+  if (encounterOpen.value) closeEncounter()
+  if (echoOpen.value) closeTimeEcho()
+  if (themeDetail.value) closeThemeSpace()
+  encounterMenuOpen.value = false
+}
+function onKeydown(event: KeyboardEvent) {
+  const tag = (event.target as HTMLElement | null)?.tagName
+  if (tag === 'TEXTAREA' || tag === 'INPUT') {
+    if (event.key === 'Escape') closeOverlays()
+    return
+  }
+  if (event.key === 'n' || event.key === 'N') {
+    event.preventDefault()
+    openComposer()
+  } else if (event.key === 'Escape') {
+    closeOverlays()
+  }
+}
+
+watch(ideas, (value) => {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(value))
+  } catch {
+    notify('浏览器暂时无法保存数据，请导出备份或检查存储空间。')
+  }
+}, { deep: true })
+watch(encounterHistory, (value) => {
+  try {
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(value))
+  } catch {
+    notify('偶遇历史暂时无法保存，请检查浏览器存储空间。')
+  }
+}, { deep: true })
+watch(motionEnabled, (value) => {
+  engine?.setMotionEnabled(value)
+  galaxyLayer?.setMotionEnabled(value)
+})
+const anyModalOpen = computed(() => composerOpen.value || encounterOpen.value || echoOpen.value || Boolean(activeIdea.value) || Boolean(themeDetail.value))
+watch(anyModalOpen, (open) => {
+  if (open) {
+    engine?.setMotionEnabled(false)
+    galaxyLayer?.setMotionEnabled(false)
+  } else {
+    engine?.setMotionEnabled(motionEnabled.value)
+    galaxyLayer?.setMotionEnabled(motionEnabled.value)
+  }
+})
+
+onMounted(() => {
+  tickerTimer = window.setInterval(() => { nowTick.value = Date.now() }, 1000)
+  if (galaxyCanvas.value && shell.value) {
+    galaxyLayer = new SpiralGalaxyLayer(galaxyCanvas.value, shell.value)
+    galaxyLayer.start()
+  }
+  if (canvas.value && shell.value && worldEl.value) {
+    engine = new NebulaEngine(canvas.value)
+    engine.mount(shell.value, worldEl.value, parallaxEl.value)
+    engine.onZoomChange = (zoom) => { zoomLabel.value = Math.round(zoom * 100) }
+    engine.onEncounterArrived = () => openResonanceDialog()
+    syncEngine()
+    engine.setConfirmedRelations(confirmedRelationBridge.value)
+    engine.setProblemThemes(problemThemeBridge.value)
+    engine.setMotionEnabled(motionEnabled.value)
+    engine.start()
+  }
+  window.addEventListener('pointermove', onPointerMove)
+  window.addEventListener('pointerup', onPointerUp)
+  window.addEventListener('pointercancel', onPointerUp)
+  shell.value?.addEventListener('wheel', onWheel, { passive: false })
+  window.addEventListener('keydown', onKeydown)
+})
+onBeforeUnmount(() => {
+  window.removeEventListener('pointermove', onPointerMove)
+  window.removeEventListener('pointerup', onPointerUp)
+  window.removeEventListener('pointercancel', onPointerUp)
+  shell.value?.removeEventListener('wheel', onWheel)
+  window.removeEventListener('keydown', onKeydown)
+  if (toastTimer) window.clearTimeout(toastTimer)
+  if (encounterTimer) window.clearTimeout(encounterTimer)
+  if (closePairTimer) window.clearTimeout(closePairTimer)
+  if (tickerTimer) window.clearInterval(tickerTimer)
+  bornTimers.forEach((timer) => window.clearTimeout(timer))
+  bornTimers.clear()
+  galaxyLayer?.dispose()
+  galaxyLayer = null
+  engine?.dispose()
+  engine = null
+})
+</script>
+
+<template>
+  <main
+    ref="shell"
+    class="app-shell"
+    :class="{ 'motion-paused': !motionEnabled, 'focus-mode': Boolean(activeIdea), 'is-panning': panning }"
+    @pointerdown="onPointerDown"
+    @pointerleave="onPointerLeave"
+  >
+    <div class="cosmos-background" aria-hidden="true">
+      <div ref="parallaxEl" class="nebula-parallax">
+        <div class="nebula-cloud cloud-one"></div>
+        <div class="nebula-cloud cloud-two"></div>
+        <div class="nebula-cloud cloud-three"></div>
+        <div class="nebula-cloud cloud-four"></div>
+        <div class="nebula-haze haze-one"></div>
+        <div class="nebula-haze haze-two"></div>
+      </div>
+      <canvas ref="galaxyCanvas" class="galaxy-canvas" aria-hidden="true"></canvas>
+      <div class="cosmic-vignette"></div>
+      <canvas ref="canvas" class="particle-canvas"></canvas>
+      <div class="cosmic-grain"></div>
+    </div>
+
+    <header class="topbar">
+      <a class="brand" href="#top" aria-label="灵感星云首页" @click.prevent="resetView">
+        <span class="brand-mark"><span></span><span></span><span></span></span>
+        <span class="brand-copy"><strong>灵感星云</strong><small>IDEA NEBULA</small></span>
+      </a>
+      <div class="top-note"><span class="status-dot"></span> 给未完成的想法，一片宇宙</div>
+      <div class="top-actions">
+        <button class="quiet-button" type="button" @click="showLabels = !showLabels">
+          <span class="button-glyph">✧</span>{{ showLabels ? '隐藏标题' : '显示标题' }}
+        </button>
+        <button class="quiet-button motion-button" type="button" @click="toggleMotion">
+          <span class="button-glyph">{{ motionEnabled ? 'Ⅱ' : '▶' }}</span>{{ motionEnabled ? '暂停星云' : '继续流动' }}
+        </button>
+      </div>
+    </header>
+
+    <section class="hero-copy" aria-label="产品介绍">
+      <div class="eyebrow"><span></span> A QUIET UNIVERSE FOR IDEAS</div>
+      <h1>不急着有答案，<br /><em>让想法先发光。</em></h1>
+      <p>有些念头还很微弱。<br />先把它们留下，剩下的交给时间。</p>
+      <div class="hero-footnote"><span class="tiny-star">✦</span> 不必归类 · 不必完成 · 只需留下</div>
+    </section>
+
+    <div class="orbit-caption caption-a" aria-hidden="true"><span class="caption-line"></span><span>UNFINISHED THOUGHTS</span></div>
+    <div class="orbit-caption caption-b" aria-hidden="true"><span>LET IDEAS DRIFT</span><span class="caption-line"></span></div>
+
+    <section ref="worldEl" class="idea-field" aria-label="想法星云">
+      <button
+        v-for="theme in themeHitTargets"
+        :key="`theme-hit-${theme.id}`"
+        class="theme-hit-target"
+        :style="theme.style"
+        :aria-label="`打开问题主题：${theme.title}`"
+        :title="`打开主题：${theme.title}`"
+        type="button"
+        @click.stop="openThemeSpace(theme.id)"
+      ></button>
+      <button
+        v-for="(idea, index) in ideas"
+        :key="idea.id"
+        class="idea-node"
+        :class="{
+          'is-encountering': isInEncounter(idea.id),
+          'is-focused': activeIdea?.id === idea.id || echoIdeaId === idea.id,
+          'is-born': bornIds.includes(idea.id),
+          'node-large': index % 4 === 0,
+        }"
+        :data-idea-id="idea.id"
+        :style="{
+          left: `${idea.x}%`,
+          top: `${idea.y}%`,
+          '--node-color': idea.color,
+          '--node-delay': `${(index % 7) * -0.8}s`,
+        }"
+        type="button"
+        :aria-label="`打开想法：${idea.text}`"
+        @click="openIdea(idea)"
+      >
+        <span class="node-aura"></span>
+        <span class="node-ring ring-one"></span>
+        <span class="node-ring ring-two"></span>
+        <span class="node-core"></span>
+        <span v-if="showLabels" class="node-label">{{ idea.text.length > 19 ? `${idea.text.slice(0, 19)}…` : idea.text }}</span>
+      </button>
+    </section>
+
+    <div class="side-orbit" aria-hidden="true">
+      <span class="side-orbit-ring"></span><span class="side-orbit-dot"></span><span class="side-orbit-label">THOUGHTS IN MOTION</span>
+    </div>
+
+    <div class="view-hud">
+      <span class="hud-hint">拖拽平移 · 滚轮缩放</span>
+      <div class="hud-controls">
+        <button class="hud-button" type="button" aria-label="缩小视角" @click="engine?.zoomBy(0.86)">−</button>
+        <button class="hud-zoom" type="button" aria-label="重置视角" @click="resetView">{{ zoomLabel }}%</button>
+        <button class="hud-button" type="button" aria-label="放大视角" @click="engine?.zoomBy(1.16)">＋</button>
+      </div>
+    </div>
+
+    <footer class="bottom-bar">
+      <div class="bottom-stat">
+        <div class="stat-orb"><span></span></div>
+        <div><strong>{{ ideaCount }} <span>颗光点</span></strong><small>都还在生长中</small></div>
+      </div>
+      <div class="bottom-center">
+        <button class="capture-button" type="button" @click="openComposer">
+          <span class="capture-plus">＋</span>
+          <span class="capture-text"><strong>捕捉一闪而过的念头</strong><small>CAPTURE A THOUGHT</small></span>
+          <span class="capture-key">N</span>
+        </button>
+        <div class="encounter-launcher">
+          <Transition name="menu-pop">
+            <div v-if="encounterMenuOpen" class="encounter-menu-panel">
+              <div class="encounter-menu-heading">选择一次思想相遇</div>
+              <button class="encounter-menu-option" type="button" @click="startTimeEcho">
+                <span class="menu-option-icon echo-icon">↶</span>
+                <span class="menu-option-copy"><strong>时间回响</strong><small>让过去的一颗星重新出现 · 可用 {{ timeEchoCandidate ? '1' : '0' }}</small></span>
+                <span class="menu-option-arrow">↗</span>
+              </button>
+              <button class="encounter-menu-option" type="button" @click="startResonance">
+                <span class="menu-option-icon resonance-icon">✧</span>
+                <span class="menu-option-copy"><strong>双星共振</strong><small>寻找跨越时间的两颗想法 · {{ resonanceCandidate ? '发现候选' : '暂无线索' }}</small></span>
+                <span class="menu-option-arrow">↗</span>
+              </button>
+              <div class="encounter-menu-foot">演示规则：沉淀 15 秒 · 双星时间差 30 秒</div>
+            </div>
+          </Transition>
+          <button class="encounter-button" type="button" :aria-expanded="encounterMenuOpen" @click="toggleEncounterMenu">
+            <span>✧</span> 让想法偶遇 <span class="encounter-arrow">{{ encounterMenuOpen ? '⌄' : '↗' }}</span>
+          </button>
+        </div>
+      </div>
+      <div class="bottom-right"><span class="save-indicator"></span><span>仅在此浏览器保存</span><small>YOUR PRIVATE NEBULA</small></div>
+    </footer>
+
+    <Transition name="modal-fade">
+      <div v-if="composerOpen" class="modal-backdrop" @click.self="composerOpen = false">
+        <section class="glass-modal composer-modal" role="dialog" aria-modal="true" aria-labelledby="composer-title">
+          <button class="modal-close" type="button" aria-label="关闭" @click="composerOpen = false">×</button>
+          <div class="modal-kicker"><span class="mini-orb"></span> A NEW LIGHT</div>
+          <h2 id="composer-title">留住这一瞬。</h2>
+          <p class="modal-desc">不用完整，不用正确。现在想到什么，就留下什么。</p>
+          <form @submit.prevent="submitIdea">
+            <textarea v-model="draftIdea" autofocus maxlength="500" placeholder="一个疑问、一瞬观察，或者尚未成形的念头……" rows="4"></textarea>
+            <div class="composer-bottom"><span>{{ draftIdea.length }} / 500</span><button class="primary-button" type="submit">让它成为光点 <span>↗</span></button></div>
+          </form>
+          <div class="modal-whisper">✦ 不需要标题，也不需要现在就理解它。</div>
+        </section>
+      </div>
+    </Transition>
+
+    <Transition name="modal-fade">
+      <div v-if="activeIdea" class="modal-backdrop" @click.self="closeIdea">
+        <section class="glass-modal idea-modal" role="dialog" aria-modal="true" aria-labelledby="idea-modal-title">
+          <button class="modal-close" type="button" aria-label="关闭" @click="closeIdea">×</button>
+          <div class="modal-kicker">
+            <span class="mini-orb" :style="{ background: activeIdea.color, boxShadow: `0 0 18px ${activeIdea.color}` }"></span>
+            A THOUGHT IN YOUR NEBULA
+          </div>
+          <h2 id="idea-modal-title">一颗正在生长的光点</h2>
+          <textarea v-if="isEditing" v-model="editText" class="idea-edit-area" maxlength="500" rows="5"></textarea>
+          <blockquote v-else class="idea-quote">{{ activeIdea.text }}</blockquote>
+          <div class="idea-date">留下于 {{ new Date(activeIdea.createdAt).toLocaleString() }}</div>
+          <div v-if="activeIdea.parentIdeaIds?.length" class="source-trace">✧ 这颗新念头由 {{ activeIdea.parentIdeaIds.length }} 颗旧星启发而来</div>
+          <div class="idea-actions">
+            <button class="text-button danger-button" type="button" @click="deleteIdea">让它离开星云</button>
+            <div class="action-spacer"></div>
+            <button v-if="isEditing" class="quiet-button modal-secondary" type="button" @click="isEditing = false; editText = activeIdea?.text || ''">取消</button>
+            <button v-if="isEditing" class="primary-button" type="button" @click="saveIdeaEdit">保存修改</button>
+            <button v-else class="primary-button" type="button" @click="isEditing = true">编辑这个念头 <span>✎</span></button>
+          </div>
+        </section>
+      </div>
+    </Transition>
+
+    <Transition name="modal-fade">
+      <div v-if="echoOpen && echoIdea" class="modal-backdrop encounter-backdrop" @click.self="closeTimeEcho">
+        <section class="glass-modal encounter-modal echo-modal" role="dialog" aria-modal="true" aria-labelledby="echo-title">
+          <button class="modal-close" type="button" aria-label="关闭" @click="closeTimeEcho">×</button>
+          <div class="encounter-symbol echo-symbol">↶</div>
+          <div class="modal-kicker centered-kicker">A THOUGHT RETURNS</div>
+          <h2 id="echo-title">来自过去的一次回响。</h2>
+          <p class="modal-desc centered-desc">这条想法已经在星云里沉淀了一段时间。现在的你，再读到它，会有什么不同吗？</p>
+          <div class="echo-thought" :style="{ '--thought-color': echoIdea.color }">
+            <span class="thought-index">SAVED {{ new Date(echoIdea.createdAt).toLocaleDateString() }}</span>
+            <p>{{ echoIdea.text }}</p>
+            <span class="echo-age">已沉淀 {{ Math.max(1, Math.floor((Date.now() - createdTime(echoIdea)) / 1000)) }} 秒</span>
+          </div>
+          <form @submit.prevent="saveEchoNote">
+            <label for="echo-note">此刻的你，想对过去的自己补充什么？ <span>（可留空）</span></label>
+            <textarea id="echo-note" v-model="echoNote" rows="3" maxlength="500" placeholder="也许现在有了新的理解，也许还是原来的想法……"></textarea>
+            <div class="encounter-footer">
+              <button class="text-button" type="button" @click="closeTimeEcho">只是重新看见</button>
+              <button class="primary-button" type="submit">留下此刻的新念头 <span>↗</span></button>
+            </div>
+          </form>
+        </section>
+      </div>
+    </Transition>
+
+    <Transition name="modal-fade">
+      <div v-if="encounterOpen && encounterIdeas.length === 2" class="modal-backdrop encounter-backdrop" @click.self="closeEncounter">
+        <section class="glass-modal encounter-modal" role="dialog" aria-modal="true" aria-labelledby="encounter-title">
+          <button class="modal-close" type="button" aria-label="关闭" @click="closeEncounter">×</button>
+          <div class="encounter-symbol">✧</div>
+          <div class="modal-kicker centered-kicker">{{ resonanceType === 'evolution' ? 'THOUGHTS EVOLVING THROUGH TIME' : 'A CROSS-CONTEXT ENCOUNTER' }}</div>
+          <h2 id="encounter-title">两颗光点，跨越时间相遇。</h2>
+          <p class="modal-desc centered-desc">我们不替你解释它们的关系。<br />只留一点空间，看看你会想到什么。</p>
+          <div class="encounter-pair">
+            <div class="encounter-thought" :style="{ '--thought-color': encounterIdeas[0].color }">
+              <span class="thought-index">01 / A THOUGHT · {{ new Date(encounterIdeas[0].createdAt).toLocaleDateString() }}</span>
+              <p>{{ encounterIdeas[0].text }}</p>
+            </div>
+            <div class="collision-mark">✳</div>
+            <div class="encounter-thought" :style="{ '--thought-color': encounterIdeas[1].color }">
+              <span class="thought-index">02 / ANOTHER THOUGHT · {{ new Date(encounterIdeas[1].createdAt).toLocaleDateString() }}</span>
+              <p>{{ encounterIdeas[1].text }}</p>
+            </div>
+          </div>
+          <form @submit.prevent="saveEncounterNote">
+            <label for="encounter-note">它们碰在一起，让你想到了什么？ <span>（可留空）</span></label>
+            <textarea id="encounter-note" v-model="encounterNote" rows="3" maxlength="500" placeholder="不必急着得出结论……"></textarea>
+            <div class="encounter-footer">
+              <button class="text-button" type="button" @click="closeEncounter">先让它们待在这里</button>
+              <button class="primary-button" type="submit">留下我的新念头 <span>↗</span></button>
+            </div>
+          </form>
+          <div class="encounter-disclaimer">候选由轻量文本规则筛选；是否存在联系，由你自己决定。</div>
+        </section>
+      </div>
+    </Transition>
+
+    <Transition name="toast-rise"><div v-if="toastVisible" class="toast-message"><span>✦</span>{{ toastMessage }}</div></Transition>
+    <ObservationWorkspace
+  :ideas="ideas"
+  @create="addObservationFromWorkspace"
+  @relations-change="syncConfirmedObservationRelations"
+  @themes-change="syncProblemThemes"
+/>
+    <ThemeDetailSpace
+      v-if="themeDetail"
+      :theme="themeDetail.theme"
+      :ideas="themeDetail.ideas"
+      :relations="themeDetail.relations"
+      :analyses="themeDetail.analyses"
+      @close="closeThemeSpace"
+      @open-idea="openIdeaFromTheme"
+    />
+  </main>
+</template>
+
+<style scoped>
+.encounter-launcher {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.encounter-menu-panel {
+  position: absolute;
+  z-index: 60;
+  bottom: calc(100% + 14px);
+  left: 50%;
+  width: min(350px, calc(100vw - 32px));
+  padding: 13px;
+  border: 1px solid rgba(173, 160, 255, 0.25);
+  border-radius: 18px;
+  background: linear-gradient(145deg, rgba(16, 20, 48, 0.94), rgba(8, 17, 40, 0.94));
+  box-shadow: 0 18px 65px rgba(0, 0, 0, 0.42), inset 0 1px rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(18px);
+  transform: translateX(-50%);
+}
+.encounter-menu-heading {
+  padding: 3px 7px 10px;
+  color: rgba(218, 222, 255, 0.58);
+  font-size: 10px;
+  letter-spacing: 0.16em;
+}
+.encounter-menu-option {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  gap: 11px;
+  padding: 12px 10px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  color: rgba(245, 246, 255, 0.94);
+  text-align: left;
+  background: rgba(255, 255, 255, 0.035);
+  cursor: pointer;
+  transition: background 180ms ease, border-color 180ms ease, transform 180ms ease;
+}
+.encounter-menu-option + .encounter-menu-option { margin-top: 7px; }
+.encounter-menu-option:hover {
+  transform: translateY(-1px);
+  border-color: rgba(164, 153, 255, 0.34);
+  background: rgba(144, 133, 255, 0.11);
+}
+.menu-option-icon {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  flex: 0 0 36px;
+  place-items: center;
+  border-radius: 11px;
+  font-size: 20px;
+  background: rgba(255, 255, 255, 0.07);
+}
+.echo-icon { color: #c7baff; }
+.resonance-icon { color: #8ce5f3; }
+.menu-option-copy { display: grid; flex: 1; gap: 4px; }
+.menu-option-copy strong { font-size: 13px; font-weight: 600; }
+.menu-option-copy small { color: rgba(207, 213, 245, 0.55); font-size: 10px; }
+.menu-option-arrow { color: rgba(196, 187, 255, 0.7); }
+.encounter-menu-foot {
+  padding: 10px 7px 2px;
+  color: rgba(191, 197, 230, 0.42);
+  font-size: 9px;
+  text-align: center;
+  letter-spacing: 0.04em;
+}
+.menu-pop-enter-active, .menu-pop-leave-active { transition: opacity 170ms ease, transform 170ms ease; }
+.menu-pop-enter-from, .menu-pop-leave-to { opacity: 0; transform: translate(-50%, 8px) scale(0.97); }
+.echo-symbol { color: #b9a8ff; }
+.echo-thought {
+  position: relative;
+  margin: 20px 0 18px;
+  padding: 23px 22px 19px;
+  border: 1px solid color-mix(in srgb, var(--thought-color) 35%, transparent);
+  border-radius: 16px;
+  background: linear-gradient(135deg, color-mix(in srgb, var(--thought-color) 10%, rgba(255,255,255,0.025)), rgba(255,255,255,0.025));
+  box-shadow: inset 0 1px rgba(255,255,255,0.055), 0 0 34px color-mix(in srgb, var(--thought-color) 9%, transparent);
+}
+.echo-thought p { margin: 13px 0 17px; color: rgba(248, 248, 255, 0.94); font-size: 19px; line-height: 1.8; }
+.echo-age { color: rgba(195, 201, 232, 0.48); font-size: 10px; letter-spacing: 0.05em; }
+.source-trace { margin-top: 10px; color: rgba(177, 195, 255, 0.7); font-size: 11px; }
+@media (max-width: 640px) {
+  .encounter-menu-panel { bottom: calc(100% + 10px); }
+  .echo-thought { padding: 18px 16px 15px; }
+  .echo-thought p { font-size: 16px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .encounter-menu-option, .menu-pop-enter-active, .menu-pop-leave-active { transition: none !important; }
+}
+
+/* Phase 5：覆盖在 Canvas 主题椭圆上的透明命中区域。星点按钮在 DOM 顺序上位于其后，仍可正常点击。 */
+.theme-hit-target {
+  position: absolute;
+  z-index: 1;
+  display: block;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 50%;
+  background: transparent;
+  transform: translate(-50%, -50%);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.theme-hit-target:hover, .theme-hit-target:focus-visible {
+  border-color: rgba(183, 166, 255, 0.13);
+  background: radial-gradient(ellipse, rgba(159, 139, 255, 0.055), transparent 68%);
+  outline: none;
+}
+.theme-hit-target:focus-visible {
+  box-shadow: 0 0 0 2px rgba(184, 165, 255, 0.24);
+}
+.idea-field .idea-node { z-index: 2; }
+</style>

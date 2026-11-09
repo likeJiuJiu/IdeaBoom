@@ -3,6 +3,9 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { NebulaEngine } from './lib/nebula'
 import { SpiralGalaxyLayer } from './lib/spiral-galaxy'
 import ObservationWorkspace from './components/ObservationWorkspace.vue'
+import ThemeDetailSpace from './components/ThemeDetailSpace.vue'
+import type { ObservationAnalysis, ObservationRelation, ObservationSource, ProblemTheme } from './types/observation'
+import { extendProblemTheme, loadObservationWorkspace, saveObservationWorkspace, updateProblemThemeDetails, updateProblemThemeStatus } from './lib/observation-store'
 
 type Idea = {
   id: number
@@ -36,6 +39,14 @@ type ResonanceCandidate = {
   similarity: number
   score: number
   gapMs: number
+}
+
+type ThemeDetailPayload = {
+  theme: ProblemTheme
+  ideas: ObservationSource[]
+  allIdeas: ObservationSource[]
+  relations: ObservationRelation[]
+  analyses: Record<string, ObservationAnalysis>
 }
 
 const STORAGE_KEY = 'idea-nebula-ideas-v1'
@@ -289,6 +300,29 @@ let tickerTimer: number | undefined
 let activeResonanceKey: string | null = null
 const confirmedRelationBridge = ref<Array<{ sourceId: number; targetId: number; type: string }>>([])
 const problemThemeBridge = ref<Array<{ id: string; title: string; observationIds: number[]; status: 'observing' | 'exploring' | 'paused' }>>([])
+const themeDetail = ref<ThemeDetailPayload | null>(null)
+
+// Canvas 的主题椭圆由透明 DOM 命中层承接点击。尺寸与 nebula.ts 中的椭圆边界规则保持一致。
+const themeHitTargets = computed(() => problemThemeBridge.value.flatMap((theme) => {
+  const members = ideas.value.filter((idea) => theme.observationIds.includes(idea.id))
+  if (members.length < 2) return []
+  const xs = members.map((idea) => idea.x)
+  const ys = members.map((idea) => idea.y)
+  const minX = Math.min(...xs)
+  const maxX = Math.max(...xs)
+  const minY = Math.min(...ys)
+  const maxY = Math.max(...ys)
+  return [{
+    id: theme.id,
+    title: theme.title,
+    style: {
+      left: String((minX + maxX) / 2) + '%',
+      top: String((minY + maxY) / 2) + '%',
+      width: 'max(232px, calc(' + (maxX - minX) + '% + 168px))',
+      height: 'max(176px, calc(' + (maxY - minY) + '% + 128px))',
+    },
+  }]
+}))
 const bornTimers = new Map<number, number>()
 const activePointers = new Map<number, { x: number; y: number }>()
 let pinchDistance = 0
@@ -310,6 +344,123 @@ function syncConfirmedObservationRelations(relations: Array<{ sourceId: number; 
 function syncProblemThemes(themes: Array<{ id: string; title: string; observationIds: number[]; status: 'observing' | 'exploring' | 'paused' }>): void {
   problemThemeBridge.value = themes
   engine?.setProblemThemes(themes)
+}
+
+function refreshThemeSpace(): void {
+  const current = themeDetail.value
+  if (!current) return
+  const state = loadObservationWorkspace()
+  const theme = state.themes.find((item) => item.id === current.theme.id)
+  if (!theme) {
+    closeThemeSpace()
+    notify('主题已不存在，已返回星云。')
+    return
+  }
+  const memberIds = new Set(theme.observationIds)
+  const themeIdeas = ideas.value.filter((idea) => memberIds.has(idea.id))
+  const analyses: Record<string, ObservationAnalysis> = {}
+  for (const id of theme.observationIds) {
+    const analysis = state.analyses[String(id)]
+    if (analysis) analyses[String(id)] = analysis
+  }
+  themeDetail.value = {
+    theme,
+    ideas: themeIdeas,
+    allIdeas: ideas.value,
+    relations: state.relations.filter((relation) => relation.status === 'confirmed'),
+    analyses,
+  }
+  syncProblemThemes(state.themes.map((item) => ({
+    id: item.id, title: item.title, observationIds: [...item.observationIds], status: item.status,
+  })))
+}
+
+function openThemeSpace(themeId: string): void {
+  const state = loadObservationWorkspace()
+  const theme = state.themes.find((item) => item.id === themeId)
+  if (!theme) {
+    notify('这个主题暂时无法读取，请关闭后重新打开观察工作台。')
+    return
+  }
+  const memberIds = new Set(theme.observationIds)
+  const themeIdeas = ideas.value.filter((idea) => memberIds.has(idea.id))
+  const analyses: Record<string, ObservationAnalysis> = {}
+  for (const id of theme.observationIds) {
+    const analysis = state.analyses[String(id)]
+    if (analysis) analyses[String(id)] = analysis
+  }
+  themeDetail.value = {
+    theme,
+    ideas: themeIdeas,
+    allIdeas: ideas.value,
+    relations: state.relations.filter((relation) => relation.status === 'confirmed'),
+    analyses,
+  }
+}
+
+function closeThemeSpace(): void {
+  themeDetail.value = null
+}
+
+function openIdeaFromTheme(id: number): void {
+  const idea = ideas.value.find((item) => item.id === id)
+  closeThemeSpace()
+  if (idea) openIdea(idea)
+}
+
+function createObservationFromTheme(text: string): void {
+  const idea = addIdea(text)
+  if (!idea) {
+    notify('先写下一条观察，再保存到星云。')
+    return
+  }
+  // 主题详情打开期间背景动效处于暂停状态；只同步星点数据，不启动流星动画。
+  markBorn(idea.id)
+  notify('新观察已保存到星云；确认关系后可以加入主题。')
+  nextTick(() => {
+    syncEngine()
+    if (themeDetail.value) themeDetail.value = { ...themeDetail.value, allIdeas: [...ideas.value] }
+  })
+}
+
+function extendObservationIntoTheme(observationId: number): void {
+  const current = themeDetail.value
+  const observation = ideas.value.find((item) => item.id === observationId)
+  if (!current || !observation) return
+  const state = loadObservationWorkspace()
+  const next = extendProblemTheme(state, current.theme.id, observationId, state.relations, observation.text)
+  if (next === state) {
+    notify('暂时无法加入：需要先确认这条观察与主题成员之间的关联。')
+    return
+  }
+  saveObservationWorkspace(next)
+  refreshThemeSpace()
+  notify('新观察已加入主题，星群已经更新。')
+}
+
+function updateThemeDetailsFromSpace(payload: { title: string; description: string }): void {
+  const current = themeDetail.value
+  if (!current) return
+  const state = loadObservationWorkspace()
+  const next = updateProblemThemeDetails(state, current.theme.id, payload)
+  if (next === state) {
+    notify(payload.title.trim() ? '主题信息没有发生变化。' : '主题名称不能为空。')
+    return
+  }
+  saveObservationWorkspace(next)
+  refreshThemeSpace()
+  notify('主题信息已保存。')
+}
+
+function changeThemeStatusFromSpace(status: 'observing' | 'exploring' | 'paused'): void {
+  const current = themeDetail.value
+  if (!current) return
+  const state = loadObservationWorkspace()
+  const next = updateProblemThemeStatus(state, current.theme.id, status)
+  if (next === state) return
+  saveObservationWorkspace(next)
+  refreshThemeSpace()
+  notify('主题状态已更新。')
 }
 function markBorn(id: number) {
   bornIds.value = [...bornIds.value, id]
@@ -644,6 +795,7 @@ function closeOverlays() {
   if (activeIdea.value) closeIdea()
   if (encounterOpen.value) closeEncounter()
   if (echoOpen.value) closeTimeEcho()
+  if (themeDetail.value) closeThemeSpace()
   encounterMenuOpen.value = false
 }
 function onKeydown(event: KeyboardEvent) {
@@ -678,7 +830,7 @@ watch(motionEnabled, (value) => {
   engine?.setMotionEnabled(value)
   galaxyLayer?.setMotionEnabled(value)
 })
-const anyModalOpen = computed(() => composerOpen.value || encounterOpen.value || echoOpen.value || Boolean(activeIdea.value))
+const anyModalOpen = computed(() => composerOpen.value || encounterOpen.value || echoOpen.value || Boolean(activeIdea.value) || Boolean(themeDetail.value))
 watch(anyModalOpen, (open) => {
   if (open) {
     engine?.setMotionEnabled(false)
@@ -781,6 +933,16 @@ onBeforeUnmount(() => {
     <div class="orbit-caption caption-b" aria-hidden="true"><span>LET IDEAS DRIFT</span><span class="caption-line"></span></div>
 
     <section ref="worldEl" class="idea-field" aria-label="想法星云">
+      <button
+        v-for="theme in themeHitTargets"
+        :key="`theme-hit-${theme.id}`"
+        class="theme-hit-target"
+        :style="theme.style"
+        :aria-label="`打开问题主题：${theme.title}`"
+        :title="`打开主题：${theme.title}`"
+        type="button"
+        @click.stop="openThemeSpace(theme.id)"
+      ></button>
       <button
         v-for="(idea, index) in ideas"
         :key="idea.id"
@@ -963,6 +1125,20 @@ onBeforeUnmount(() => {
   @relations-change="syncConfirmedObservationRelations"
   @themes-change="syncProblemThemes"
 />
+    <ThemeDetailSpace
+      v-if="themeDetail"
+      :theme="themeDetail.theme"
+      :ideas="themeDetail.ideas"
+      :all-ideas="ideas"
+      :relations="themeDetail.relations"
+      :analyses="themeDetail.analyses"
+      @close="closeThemeSpace"
+      @open-idea="openIdeaFromTheme"
+      @create-observation="createObservationFromTheme"
+      @extend-observation="extendObservationIntoTheme"
+      @change-status="changeThemeStatusFromSpace"
+      @update-details="updateThemeDetailsFromSpace"
+    />
   </main>
 </template>
 
@@ -1059,4 +1235,27 @@ onBeforeUnmount(() => {
 @media (prefers-reduced-motion: reduce) {
   .encounter-menu-option, .menu-pop-enter-active, .menu-pop-leave-active { transition: none !important; }
 }
+
+/* Phase 5：覆盖在 Canvas 主题椭圆上的透明命中区域。星点按钮在 DOM 顺序上位于其后，仍可正常点击。 */
+.theme-hit-target {
+  position: absolute;
+  z-index: 1;
+  display: block;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 50%;
+  background: transparent;
+  transform: translate(-50%, -50%);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.theme-hit-target:hover, .theme-hit-target:focus-visible {
+  border-color: rgba(183, 166, 255, 0.13);
+  background: radial-gradient(ellipse, rgba(159, 139, 255, 0.055), transparent 68%);
+  outline: none;
+}
+.theme-hit-target:focus-visible {
+  box-shadow: 0 0 0 2px rgba(184, 165, 255, 0.24);
+}
+.idea-field .idea-node { z-index: 2; }
 </style>

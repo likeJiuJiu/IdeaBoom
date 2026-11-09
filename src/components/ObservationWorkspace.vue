@@ -398,6 +398,7 @@ function themeEventLabel(type: ProblemTheme['events'][number]['type']): string {
     'observation-added': '新增观察',
     'status-changed': '状态变化',
     'duplicate-merged': '重复主题整理',
+    'details-updated': '主题信息调整',
   }
   return labels[type]
 }
