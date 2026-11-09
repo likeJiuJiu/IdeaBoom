@@ -1,4 +1,5 @@
 <!-- IDEA-BOOM-THEME-CENTER-V2 -->
+<!-- IDEA-BOOM-THEME-NOTICE-V2-AUTO-FOCUS -->
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import type {
@@ -193,20 +194,12 @@ function showThemeActionNotice(
   }
 }
 
-function goToThemeCenterFromNotice(): void {
-  const notice = themeActionNotice.value
-  if (!notice) return
-  const theme = workspace.value.themes.find((item) => item.id === notice.themeId)
-  if (!theme) {
-    themeActionNotice.value = null
-    statusMessage.value = '这个主题当前已不存在，请在主题中心重新查找。'
-    return
-  }
+function focusThemeInCenter(theme: ProblemTheme, message: string): void {
+  // 创建/扩展成功后直接切换到主题中心，并只筛选目标主题，避免用户在长详情页中寻找提示。
   activeTab.value = 'themes'
   themeStatusFilter.value = 'all'
   themeSearchQuery.value = theme.title
-  statusMessage.value = `已在主题中心定位到「${theme.title}」。`
-  themeActionNotice.value = null
+  statusMessage.value = message
 }
 
 function openNoticedThemeSpace(): void {
@@ -470,11 +463,13 @@ function createTheme(): void {
       showThemeActionNotice(
         matchingTheme,
         'existing',
-        `这组观察已经归入主题「${matchingTheme.title}」，无需重复创建。你可以直接进入主题空间继续整理。`,
+        `这组观察已经归入主题「${matchingTheme.title}」，没有重复创建。已为你定位到这个主题。`,
       )
-      statusMessage.value = `已找到已有主题「${matchingTheme.title}」。`
+      focusThemeInCenter(matchingTheme, `已找到已有主题「${matchingTheme.title}」。`)
     } else {
-      statusMessage.value = '这组观察已经整理过主题。请到主题中心查看已有主题。'
+      statusMessage.value = '这组观察已经整理过主题，但暂时无法匹配到主题记录。请检查主题中心。'
+      activeTab.value = 'themes'
+      themeSearchQuery.value = ''
     }
     return
   }
@@ -486,11 +481,13 @@ function createTheme(): void {
     showThemeActionNotice(
       createdTheme,
       'created',
-      `主题「${createdTheme.title}」已创建，并已保存到主题中心。之后可以继续补充观察、修改描述和调整状态。`,
+      `主题「${createdTheme.title}」已创建，并已保存到主题中心。你现在可以继续编辑描述、补充观察或进入主题空间。`,
     )
-    statusMessage.value = `主题「${createdTheme.title}」已创建，可在主题中心查看。`
+    focusThemeInCenter(createdTheme, `主题「${createdTheme.title}」已创建，已为你在主题中心定位。`)
   } else {
-    statusMessage.value = '问题主题已创建。它仍处于持续观察阶段。'
+    statusMessage.value = '问题主题已创建，但没有读取到主题名称。请打开主题中心检查。'
+    activeTab.value = 'themes'
+    themeSearchQuery.value = ''
   }
 }
 
@@ -517,7 +514,7 @@ function addSelectedObservationToTheme(themeId: string): void {
       'added',
       `当前观察已加入主题「${updatedTheme.title}」。这个主题现在包含 ${updatedTheme.observationIds.length} 条观察，可以继续在主题中心查看和管理。`,
     )
-    statusMessage.value = `观察已加入主题「${updatedTheme.title}」。`
+    focusThemeInCenter(updatedTheme, `观察已加入主题「${updatedTheme.title}」，已为你定位。`)
   } else {
     statusMessage.value = '新观察已加入主题，主题星群已更新。'
   }
@@ -797,25 +794,6 @@ function relationTypeLabel(type: ObservationRelation['type'] | LocalRelationCand
                   </div>
                 </section>
 
-                <Transition name="obw-theme-notice">
-                  <section v-if="themeActionNotice" class="obw-theme-action-notice" aria-live="polite">
-                    <div class="obw-theme-notice-icon" aria-hidden="true">✦</div>
-                    <div class="obw-theme-notice-copy">
-                      <span class="obw-theme-notice-kicker">
-                        {{ themeActionNotice.kind === 'created' ? 'THEME CREATED' : themeActionNotice.kind === 'added' ? 'OBSERVATION ADDED' : 'EXISTING THEME FOUND' }}
-                      </span>
-                      <strong>{{ themeActionNotice.title }}</strong>
-                      <p>{{ themeActionNotice.message }}</p>
-                      <small>主题已保存在「主题中心」，以后可以从工作台顶部的主题中心入口找到它。</small>
-                    </div>
-                    <div class="obw-theme-notice-actions">
-                      <button type="button" class="obw-theme-notice-primary" @click="goToThemeCenterFromNotice">在主题中心查看</button>
-                      <button type="button" class="obw-theme-notice-secondary" @click="openNoticedThemeSpace">打开主题空间 <span>↗</span></button>
-                    </div>
-                    <button type="button" class="obw-theme-notice-dismiss" aria-label="关闭提示" @click="dismissThemeActionNotice">×</button>
-                  </section>
-                </Transition>
-
                 <section v-if="themeEchoSuggestions.length" class="obw-theme-echoes">
                   <div class="obw-section-heading">
                     <div>
@@ -851,6 +829,24 @@ function relationTypeLabel(type: ObservationRelation['type'] | LocalRelationCand
           </div>
 
           <section v-else class="obw-theme-center">
+            <Transition name="obw-theme-notice">
+              <section v-if="themeActionNotice" class="obw-theme-action-notice obw-theme-action-notice-center" aria-live="polite">
+                <div class="obw-theme-notice-icon" aria-hidden="true">✦</div>
+                <div class="obw-theme-notice-copy">
+                  <span class="obw-theme-notice-kicker">
+                    {{ themeActionNotice.kind === 'created' ? 'THEME CREATED' : themeActionNotice.kind === 'added' ? 'OBSERVATION ADDED' : 'EXISTING THEME FOUND' }}
+                  </span>
+                  <strong>{{ themeActionNotice.title }}</strong>
+                  <p>{{ themeActionNotice.message }}</p>
+                  <small>已自动定位到下方主题卡片。主题保存在「主题中心」，可随时继续管理。</small>
+                </div>
+                <div class="obw-theme-notice-actions">
+                  <button type="button" class="obw-theme-notice-primary" @click="openNoticedThemeSpace">打开主题空间 <span>↗</span></button>
+                  <button type="button" class="obw-theme-notice-secondary" @click="dismissThemeActionNotice">知道了</button>
+                </div>
+                <button type="button" class="obw-theme-notice-dismiss" aria-label="关闭提示" @click="dismissThemeActionNotice">×</button>
+              </section>
+            </Transition>
             <div class="obw-theme-center-heading">
               <div>
                 <span class="obw-overline">YOUR PROBLEM THEMES</span>
@@ -876,7 +872,13 @@ function relationTypeLabel(type: ObservationRelation['type'] | LocalRelationCand
             </div>
 
             <div v-if="visibleThemes.length" class="obw-theme-grid">
-              <article v-for="theme in visibleThemes" :key="theme.id" class="obw-theme-center-card">
+              <article
+                v-for="theme in visibleThemes"
+                :key="theme.id"
+                class="obw-theme-center-card"
+                :class="{ 'is-recent-theme': themeActionNotice?.themeId === theme.id }"
+                :data-theme-id="theme.id"
+              >
                 <div class="obw-theme-card-topline">
                   <span class="obw-theme-card-kicker">PROBLEM THEME</span>
                   <span class="obw-theme-status-pill" :class="`status-${theme.status}`">{{ themeStatusLabel(theme.status) }}</span>
@@ -1222,6 +1224,7 @@ function relationTypeLabel(type: ObservationRelation['type'] | LocalRelationCand
 .obw-theme-filters b { color:#c9bdff; font-size:11px; font-weight:600; }
 .obw-theme-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:15px; align-items:start; }
 .obw-theme-center-card { min-width:0; padding:21px 22px 18px; border:1px solid rgba(173,159,255,.17); border-radius:16px; background:linear-gradient(145deg,rgba(117,99,193,.09),rgba(255,255,255,.025) 60%),rgba(6,10,28,.64); box-shadow:inset 0 1px rgba(255,255,255,.04); }
+.obw-theme-center-card.is-recent-theme { border-color:rgba(151,214,194,.52); box-shadow:0 0 0 1px rgba(151,214,194,.12),0 0 34px rgba(101,202,167,.12),inset 0 1px rgba(255,255,255,.06); }
 .obw-theme-card-topline { display:flex; align-items:center; justify-content:space-between; gap:12px; }
 .obw-theme-card-kicker { color:rgba(179,173,225,.47); font-size:10px; letter-spacing:.16em; }
 .obw-theme-status-pill { padding:5px 10px; border:1px solid rgba(169,154,255,.18); border-radius:999px; color:#cfc5ff; background:rgba(153,132,255,.09); font-size:11px; white-space:nowrap; }
@@ -1282,11 +1285,11 @@ function relationTypeLabel(type: ObservationRelation['type'] | LocalRelationCand
 }
 .obw-theme-notice-copy { min-width: 0; }
 .obw-theme-notice-kicker { display: block; margin-bottom: 5px; color: rgba(164, 224, 205, .75); font-size: 10px; font-weight: 650; letter-spacing: .14em; }
-.obw-theme-notice-copy strong { display: block; color: #f1edff; font-size: 18px; line-height: 1.45; overflow-wrap: anywhere; }
-.obw-theme-notice-copy p { margin: 6px 0 5px; color: rgba(222, 224, 240, .86); font-size: 13px; line-height: 1.7; }
+.obw-theme-notice-copy strong { display: block; color: #f1edff; font-size: 21px; line-height: 1.45; overflow-wrap: anywhere; }
+.obw-theme-notice-copy p { margin: 6px 0 5px; color: rgba(222, 224, 240, .9); font-size: 14px; line-height: 1.75; }
 .obw-theme-notice-copy small { color: rgba(184, 193, 216, .58); font-size: 11px; line-height: 1.6; }
 .obw-theme-notice-actions { display: flex; flex-direction: column; align-items: stretch; gap: 8px; min-width: 142px; }
-.obw-theme-notice-primary, .obw-theme-notice-secondary { padding: 9px 12px; border-radius: 9px; font: inherit; font-size: 12px; cursor: pointer; transition: transform 160ms ease, border-color 160ms ease, background 160ms ease; }
+.obw-theme-notice-primary, .obw-theme-notice-secondary { padding: 10px 13px; border-radius: 9px; font: inherit; font-size: 13px; cursor: pointer; transition: transform 160ms ease, border-color 160ms ease, background 160ms ease; }
 .obw-theme-notice-primary { border: 1px solid rgba(162, 221, 199, .34); color: #eafff5; background: linear-gradient(115deg, rgba(76, 158, 132, .32), rgba(90, 119, 174, .22)); }
 .obw-theme-notice-secondary { border: 1px solid rgba(174, 160, 229, .2); color: rgba(225, 220, 250, .88); background: rgba(255,255,255,.035); }
 .obw-theme-notice-primary:hover, .obw-theme-notice-secondary:hover { transform: translateY(-1px); }

@@ -2,6 +2,7 @@
 <!-- IDEA-BOOM-PHASE5-THEME-DETAIL-SPACE -->
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import ThemeResearchWorkspace from './ThemeResearchWorkspace.vue'
 import type {
   ObservationAnalysis,
   ObservationRelation,
@@ -27,6 +28,18 @@ const emit = defineEmits<{
   'change-status': [status: ThemeStatus]
   'update-details': [payload: { title: string; description: string }]
 }>()
+
+type ThemeDetailTab = 'overview' | 'observations' | 'relations' | 'research' | 'timeline'
+const activeTab = ref<ThemeDetailTab>('overview')
+
+watch(() => props.theme.id, () => { activeTab.value = 'overview' })
+
+const researchTheme = computed(() => ({
+  id: props.theme.id,
+  title: props.theme.title,
+  description: props.theme.description,
+  observationIds: [...props.theme.observationIds],
+}))
 
 const statusLabels: Record<ThemeStatus, string> = {
   observing: '持续观察',
@@ -220,6 +233,14 @@ function findIdeaText(id: number): string {
           </header>
 
           <div class="theme-space-scroll">
+            <nav class="theme-space-tabs" aria-label="主题详情导航">
+              <button type="button" :class="{ active: activeTab === 'overview' }" :aria-pressed="activeTab === 'overview'" @click="activeTab = 'overview'"><span>✧</span> 主题概览</button>
+              <button type="button" :class="{ active: activeTab === 'observations' }" :aria-pressed="activeTab === 'observations'" @click="activeTab = 'observations'"><span>◉</span> 观察成员 <em>{{ members.length }}</em></button>
+              <button type="button" :class="{ active: activeTab === 'relations' }" :aria-pressed="activeTab === 'relations'" @click="activeTab = 'relations'"><span>⌁</span> 关系依据 <em>{{ relations.length }}</em></button>
+              <button type="button" :class="{ active: activeTab === 'research' }" :aria-pressed="activeTab === 'research'" @click="activeTab = 'research'"><span>◎</span> 外部探索</button>
+              <button type="button" :class="{ active: activeTab === 'timeline' }" :aria-pressed="activeTab === 'timeline'" @click="activeTab = 'timeline'"><span>↗</span> 成长记录 <em>{{ timeline.length }}</em></button>
+            </nav>
+            <template v-if="activeTab === 'overview'">
             <section class="theme-space-hero-grid">
               <div class="theme-space-network-card">
                 <div class="theme-space-section-topline">
@@ -275,7 +296,9 @@ function findIdeaText(id: number): string {
               </aside>
             </section>
 
-            <section class="theme-space-content-grid">
+            </template>
+            <template v-else-if="activeTab === 'observations'">
+              <section class="theme-space-content-grid">
               <div class="theme-space-content-card">
                 <div class="theme-space-section-topline">
                   <div>
@@ -301,31 +324,7 @@ function findIdeaText(id: number): string {
                 <div v-else class="theme-space-empty">主题成员暂不可用，可能对应的原始观察已被删除。</div>
               </div>
 
-              <div class="theme-space-content-card">
-                <div class="theme-space-section-topline">
-                  <div>
-                    <span class="theme-space-overline">CONFIRMED CONNECTIONS</span>
-                    <h3>关系依据</h3>
-                  </div>
-                  <span class="theme-space-count">{{ relations.length }} 条</span>
-                </div>
-                <div v-if="relations.length" class="theme-space-relation-list">
-                  <article v-for="relation in relations" :key="relation.id" class="theme-space-relation">
-                    <div class="theme-space-relation-head">
-                      <span class="theme-space-relation-type">{{ relationLabel(relation.type) }}</span>
-                      <span>{{ formatDate(relation.updatedAt) }}</span>
-                    </div>
-                    <p class="theme-space-relation-reason">{{ relation.reason || '用户已确认这两条观察存在联系。' }}</p>
-                    <div class="theme-space-evidence">
-                      <div><span>观察 A</span><p>“{{ relation.evidenceFromSource || findIdeaText(relation.sourceId) }}”</p></div>
-                      <div><span>观察 B</span><p>“{{ relation.evidenceFromTarget || findIdeaText(relation.targetId) }}”</p></div>
-                    </div>
-                  </article>
-                </div>
-                <div v-else class="theme-space-empty">当前主题暂无可展示的关系依据。</div>
-              </div>
-            </section>
-
+              </section>
             <section class="theme-space-action-grid">
               <div class="theme-space-content-card">
                 <div class="theme-space-section-topline">
@@ -361,8 +360,38 @@ function findIdeaText(id: number): string {
                   <p v-if="localMessage" class="theme-space-local-message" aria-live="polite">{{ localMessage }}</p>
                 </form>
               </div>
-            </section>
-
+            </section>            </template>
+            <template v-else-if="activeTab === 'relations'">
+              <section class="theme-space-content-grid theme-space-single-column">
+              <div class="theme-space-content-card">
+                <div class="theme-space-section-topline">
+                  <div>
+                    <span class="theme-space-overline">CONFIRMED CONNECTIONS</span>
+                    <h3>关系依据</h3>
+                  </div>
+                  <span class="theme-space-count">{{ relations.length }} 条</span>
+                </div>
+                <div v-if="relations.length" class="theme-space-relation-list">
+                  <article v-for="relation in relations" :key="relation.id" class="theme-space-relation">
+                    <div class="theme-space-relation-head">
+                      <span class="theme-space-relation-type">{{ relationLabel(relation.type) }}</span>
+                      <span>{{ formatDate(relation.updatedAt) }}</span>
+                    </div>
+                    <p class="theme-space-relation-reason">{{ relation.reason || '用户已确认这两条观察存在联系。' }}</p>
+                    <div class="theme-space-evidence">
+                      <div><span>观察 A</span><p>“{{ relation.evidenceFromSource || findIdeaText(relation.sourceId) }}”</p></div>
+                      <div><span>观察 B</span><p>“{{ relation.evidenceFromTarget || findIdeaText(relation.targetId) }}”</p></div>
+                    </div>
+                  </article>
+                </div>
+                <div v-else class="theme-space-empty">当前主题暂无可展示的关系依据。</div>
+              </div>
+              </section>
+            </template>
+            <template v-else-if="activeTab === 'research'">
+              <ThemeResearchWorkspace :theme="researchTheme" :observations="members" />
+            </template>
+            <template v-else>
             <section class="theme-space-timeline-card">
               <div class="theme-space-section-topline">
                 <div>
@@ -382,8 +411,7 @@ function findIdeaText(id: number): string {
                 </li>
               </ol>
               <div v-else class="theme-space-empty">当前主题没有可展示的成长记录。</div>
-            </section>
-
+            </section>            </template>
             <footer class="theme-space-footer">
               <span>主题由你确认的观察关系组成；AI 分析和关联建议不会自动改变主题。</span>
               <button type="button" @click="emit('close')">返回星云 <span>↗</span></button>
@@ -449,5 +477,17 @@ function findIdeaText(id: number): string {
 .theme-space-evidence p { font-size: 12px !important; }
 .theme-space-timeline-copy strong { font-size: 13px !important; }
 .theme-space-timeline-copy > p { font-size: 12px !important; }
+
+
+
+/* Phase 7.1 — 主题详情导航 */
+.theme-space-tabs{position:sticky;top:0;z-index:12;display:flex;gap:7px;overflow-x:auto;margin:-2px 0 20px;padding:8px;border:1px solid rgba(172,160,244,.14);border-radius:14px;background:rgba(9,13,34,.9);backdrop-filter:blur(18px);scrollbar-width:thin}
+.theme-space-tabs button{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:42px;flex:0 0 auto;padding:0 15px;border:1px solid transparent;border-radius:10px;color:rgba(210,211,239,.67);background:transparent;font:inherit;font-size:13px;font-weight:600;cursor:pointer;transition:background .18s ease,border-color .18s ease,color .18s ease}
+.theme-space-tabs button span{color:rgba(190,174,255,.8);font-size:16px}
+.theme-space-tabs button em{display:inline-grid;min-width:20px;height:20px;place-items:center;border-radius:99px;color:rgba(210,205,255,.78);background:rgba(158,141,255,.12);font-size:10px;font-style:normal}
+.theme-space-tabs button:hover{color:#f1edff;background:rgba(157,139,255,.08)}
+.theme-space-tabs button.active{border-color:rgba(179,159,255,.3);color:#f3efff;background:linear-gradient(120deg,rgba(139,118,240,.24),rgba(86,147,190,.12));box-shadow:inset 0 1px rgba(255,255,255,.06),0 0 22px rgba(132,111,231,.08)}
+.theme-space-single-column{grid-template-columns:minmax(0,1fr)}
+@media(max-width:640px){.theme-space-tabs{margin:0 0 14px;padding:6px}.theme-space-tabs button{min-height:40px;padding:0 12px;font-size:12px}}
 
 </style>
