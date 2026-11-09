@@ -6,15 +6,19 @@ import type {
   ObservationRelation,
   ObservationSource,
   ObservationWorkspaceState,
+  ProblemTheme,
   RelationStatus,
+  ThemeStatus,
 } from '../types/observation'
 import { analyzeObservationLocally, findLocalRelationCandidates } from '../lib/observation-engine'
 import { requestObservationAnalysis } from '../lib/observation-ai'
 import {
   addProblemTheme,
+  extendProblemTheme,
   loadObservationWorkspace,
   relationId,
   saveObservationWorkspace,
+  updateProblemThemeStatus,
   updateRelationStatus,
   upsertRelation,
 } from '../lib/observation-store'
@@ -33,6 +37,7 @@ const draftText = ref('')
 const themeTitle = ref('')
 const statusMessage = ref('')
 const selectedId = ref<number | null>(null)
+const expandedThemeIds = ref<string[]>([])
 const workspace = ref<ObservationWorkspaceState>(loadObservationWorkspace())
 
 const orderedIdeas = computed(() => [...props.ideas].sort((a, b) => {
@@ -139,7 +144,34 @@ const confirmedRelatedIds = computed(() => {
     .filter((id) => orderedIdeas.value.some((item) => item.id === id))
 })
 
-const visibleThemes = computed(() => workspace.value.themes.slice(0, 5))
+const visibleThemes = computed(() => workspace.value.themes.slice(0, 8))
+
+// 当前选中的观察如果与某个主题成员存在已确认关系，才提供主题回响建议。
+const themeEchoSuggestions = computed(() => {
+  const selected = selectedObservation.value
+  if (!selected) return []
+
+  const suggestions: Array<{ theme: ProblemTheme; relation: ObservationRelation; linkedObservation: ObservationSource }> = []
+  for (const theme of workspace.value.themes) {
+    if (theme.observationIds.includes(selected.id)) continue
+
+    const relation = workspace.value.relations.find((item) => {
+      if (item.status !== 'confirmed') return false
+      return (
+        (item.sourceId === selected.id && theme.observationIds.includes(item.targetId)) ||
+        (item.targetId === selected.id && theme.observationIds.includes(item.sourceId))
+      )
+    })
+    if (!relation) continue
+
+    const linkedId = relation.sourceId === selected.id ? relation.targetId : relation.sourceId
+    const linkedObservation = orderedIdeas.value.find((item) => item.id === linkedId)
+    if (!linkedObservation) continue
+
+    suggestions.push({ theme, relation, linkedObservation })
+  }
+  return suggestions
+})
 
 // 把工作台已确认的关系同步给父级；建议态和已否定关系不会进入画布。
 const confirmedRelationsForCanvas = computed(() =>
@@ -302,14 +334,72 @@ function createTheme(): void {
     statusMessage.value = '至少需要两条已确认关联的观察，才能整理成主题。'
     return
   }
-  workspace.value = addProblemTheme(workspace.value, {
+  const previousState = workspace.value
+  const nextState = addProblemTheme(workspace.value, {
     title,
     description: '由用户确认关联的观察记录组成。主题描述仍需继续补充，不代表已经验证为普遍问题。',
     observationIds,
   })
+  if (nextState === previousState) {
+    statusMessage.value = '这组观察已经整理成一个主题。可以直接查看已有主题，避免重复创建。'
+    return
+  }
+  workspace.value = nextState
   persist()
   themeTitle.value = ''
-  statusMessage.value = '问题主题已创建。它仍处于观察阶段。'
+  statusMessage.value = '问题主题已创建。它仍处于持续观察阶段。'
+}
+
+function addSelectedObservationToTheme(themeId: string): void {
+  const selected = selectedObservation.value
+  if (!selected) return
+  const nextState = extendProblemTheme(
+    workspace.value,
+    themeId,
+    selected.id,
+    workspace.value.relations,
+    selected.text,
+  )
+  if (nextState === workspace.value) {
+    statusMessage.value = '暂时无法加入：需要先确认这条观察与主题成员之间的关联。'
+    return
+  }
+  workspace.value = nextState
+  persist()
+  statusMessage.value = '新观察已加入主题，主题星群已更新。'
+}
+
+function changeThemeStatus(themeId: string, status: ThemeStatus): void {
+  const nextState = updateProblemThemeStatus(workspace.value, themeId, status)
+  if (nextState === workspace.value) return
+  workspace.value = nextState
+  persist()
+  statusMessage.value = `主题状态已更新为「${themeStatusLabel(status)}」。`
+}
+
+function toggleThemeDetails(themeId: string): void {
+  expandedThemeIds.value = expandedThemeIds.value.includes(themeId)
+    ? expandedThemeIds.value.filter((id) => id !== themeId)
+    : [...expandedThemeIds.value, themeId]
+}
+
+function themeStatusLabel(status: ThemeStatus): string {
+  const labels: Record<ThemeStatus, string> = {
+    observing: '持续观察',
+    exploring: '探索中',
+    paused: '暂时搁置',
+  }
+  return labels[status]
+}
+
+function themeEventLabel(type: ProblemTheme['events'][number]['type']): string {
+  const labels: Record<ProblemTheme['events'][number]['type'], string> = {
+    created: '主题创建',
+    'observation-added': '新增观察',
+    'status-changed': '状态变化',
+    'duplicate-merged': '重复主题整理',
+  }
+  return labels[type]
 }
 
 function selectObservation(id: number): void {
@@ -532,6 +622,31 @@ function relationTypeLabel(type: ObservationRelation['type'] | LocalRelationCand
                   </div>
                 </section>
 
+                <section v-if="themeEchoSuggestions.length" class="obw-theme-echoes">
+                  <div class="obw-section-heading">
+                    <div>
+                      <span class="obw-overline">THEME ECHOES</span>
+                      <h3>这条观察可能延续已有主题</h3>
+                    </div>
+                    <span class="obw-count">{{ themeEchoSuggestions.length }}</span>
+                  </div>
+                  <article v-for="suggestion in themeEchoSuggestions" :key="suggestion.theme.id" class="obw-theme-echo-card">
+                    <div class="obw-theme-echo-heading">
+                      <strong>{{ suggestion.theme.title }}</strong>
+                      <span>{{ suggestion.theme.observationIds.length }} 条已有观察</span>
+                    </div>
+                    <p>{{ suggestion.relation.reason }}</p>
+                    <div class="obw-theme-echo-evidence">
+                      <span>已确认关联的主题成员</span>
+                      <q>{{ truncate(suggestion.linkedObservation.text, 100) }}</q>
+                    </div>
+                    <button class="obw-confirm-button" type="button" @click="addSelectedObservationToTheme(suggestion.theme.id)">
+                      ＋ 将当前观察加入主题
+                    </button>
+                  </article>
+                  <p class="obw-privacy-note">只有与主题成员存在已确认关系的观察才会出现这里；加入主题仍由你决定。</p>
+                </section>
+
                 <section v-if="visibleThemes.length" class="obw-saved-themes">
                   <div class="obw-section-heading">
                     <div>
@@ -541,8 +656,43 @@ function relationTypeLabel(type: ObservationRelation['type'] | LocalRelationCand
                     <span class="obw-count">{{ visibleThemes.length }}</span>
                   </div>
                   <article v-for="theme in visibleThemes" :key="theme.id" class="obw-saved-theme">
-                    <div><strong>{{ theme.title }}</strong><span>{{ theme.observationIds.length }} 条观察 · {{ theme.status === 'observing' ? '持续观察' : theme.status === 'exploring' ? '探索中' : '暂时搁置' }}</span></div>
+                    <div class="obw-saved-theme-head">
+                      <button class="obw-theme-title-button" type="button" @click="toggleThemeDetails(theme.id)">
+                        <strong>{{ theme.title }}</strong>
+                        <span>{{ theme.observationIds.length }} 条观察 · {{ themeStatusLabel(theme.status) }}</span>
+                        <small>{{ expandedThemeIds.includes(theme.id) ? '收起详情 −' : '查看演进详情 +' }}</small>
+                      </button>
+                      <div class="obw-theme-status-actions" aria-label="主题状态">
+                        <button type="button" :class="{ active: theme.status === 'observing' }" @click="changeThemeStatus(theme.id, 'observing')">持续观察</button>
+                        <button type="button" :class="{ active: theme.status === 'exploring' }" @click="changeThemeStatus(theme.id, 'exploring')">探索中</button>
+                        <button type="button" :class="{ active: theme.status === 'paused' }" @click="changeThemeStatus(theme.id, 'paused')">搁置</button>
+                      </div>
+                    </div>
                     <p>{{ theme.description }}</p>
+                    <div v-if="expandedThemeIds.includes(theme.id)" class="obw-theme-expanded">
+                      <div class="obw-theme-members">
+                        <strong>主题包含的观察</strong>
+                        <button
+                          v-for="observationId in theme.observationIds"
+                          :key="observationId"
+                          type="button"
+                          :disabled="!orderedIdeas.some((item) => item.id === observationId)"
+                          @click="selectObservation(observationId)"
+                        >
+                          {{ orderedIdeas.find((item) => item.id === observationId)?.text || `观察 #${observationId}（当前记录中不可见）` }}
+                        </button>
+                      </div>
+                      <div class="obw-theme-history">
+                        <strong>主题成长记录</strong>
+                        <ol v-if="theme.events.length">
+                          <li v-for="event in theme.events.slice().reverse()" :key="event.id">
+                            <span>{{ displayDate(event.at) }} · {{ themeEventLabel(event.type) }}</span>
+                            <p>{{ event.message }}</p>
+                          </li>
+                        </ol>
+                        <p v-else class="obw-theme-history-empty">该主题创建于旧版本，尚无可追溯的演进记录。后续变化会从现在开始记录。</p>
+                      </div>
+                    </div>
                   </article>
                 </section>
               </template>
@@ -753,4 +903,39 @@ function relationTypeLabel(type: ObservationRelation['type'] | LocalRelationCand
   .obw-capture-footer { align-items: flex-start; flex-direction: column; gap: 8px; }
   .obw-capture-footer .obw-primary-button { align-self: flex-end; }
 }
+
+.obw-theme-echoes { margin-top: 20px; padding: 14px; border: 1px solid rgba(111, 204, 180, 0.2); border-radius: 13px; background: linear-gradient(120deg, rgba(61, 139, 126, 0.075), rgba(112, 99, 191, 0.045)); }
+.obw-theme-echo-card { margin-top: 9px; padding: 12px; border: 1px solid rgba(122, 207, 182, 0.15); border-radius: 10px; background: rgba(4, 20, 29, 0.32); }
+.obw-theme-echo-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.obw-theme-echo-heading strong { color: rgba(222, 249, 240, 0.92); font-size: 11px; font-weight: 550; }
+.obw-theme-echo-heading span { color: rgba(166, 208, 196, 0.58); font-size: 9px; }
+.obw-theme-echo-card > p { margin: 8px 0; color: rgba(190, 205, 220, 0.7); font-size: 10px; line-height: 1.7; }
+.obw-theme-echo-evidence { display: grid; gap: 5px; margin: 9px 0; padding: 9px 10px; border-radius: 8px; background: rgba(105, 188, 161, 0.06); }
+.obw-theme-echo-evidence span { color: rgba(154, 203, 187, 0.58); font-size: 9px; }
+.obw-theme-echo-evidence q { color: rgba(216, 230, 229, 0.82); font-size: 10px; line-height: 1.6; }
+.obw-saved-theme-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.obw-theme-title-button { display: flex; min-width: 0; flex: 1; flex-direction: column; align-items: flex-start; gap: 5px; padding: 0; border: 0; color: inherit; background: transparent; text-align: left; cursor: pointer; }
+.obw-theme-title-button strong { color: rgba(231, 227, 255, 0.92); font-size: 11px; font-weight: 550; }
+.obw-theme-title-button span { color: rgba(165, 168, 208, 0.58); font-size: 9px; }
+.obw-theme-title-button small { color: rgba(174, 164, 235, 0.62); font-size: 9px; }
+.obw-theme-status-actions { display: flex; flex-wrap: wrap; gap: 4px; justify-content: flex-end; }
+.obw-theme-status-actions button { padding: 4px 6px; border: 1px solid rgba(171, 162, 222, 0.13); border-radius: 7px; color: rgba(184, 184, 216, 0.62); background: rgba(255,255,255,0.025); font: inherit; font-size: 8px; cursor: pointer; }
+.obw-theme-status-actions button.active { border-color: rgba(128, 206, 178, 0.28); color: #a9e5cd; background: rgba(75, 171, 133, 0.1); }
+.obw-theme-expanded { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; margin-top: 12px; padding-top: 12px; border-top: 1px solid rgba(191, 183, 255, 0.09); }
+.obw-theme-members, .obw-theme-history { display: flex; min-width: 0; flex-direction: column; gap: 8px; }
+.obw-theme-members > strong, .obw-theme-history > strong { color: rgba(206, 201, 240, 0.76); font-size: 9px; font-weight: 550; }
+.obw-theme-members button { padding: 7px 8px; border: 1px solid rgba(170, 158, 255, 0.1); border-radius: 7px; color: rgba(210, 208, 236, 0.73); background: rgba(255,255,255,0.025); font: inherit; font-size: 9px; line-height: 1.6; text-align: left; overflow-wrap: anywhere; cursor: pointer; }
+.obw-theme-members button:disabled { opacity: .45; cursor: not-allowed; }
+.obw-theme-history ol { display: grid; gap: 8px; margin: 0; padding: 0 0 0 16px; }
+.obw-theme-history li { padding-left: 2px; color: rgba(176, 171, 223, 0.75); }
+.obw-theme-history li span { font-size: 8px; color: rgba(165, 168, 208, 0.53); }
+.obw-theme-history li p, .obw-theme-history-empty { margin: 3px 0 0; color: rgba(198, 195, 225, 0.7); font-size: 9px; line-height: 1.6; }
+@media (max-width: 900px) {
+  .obw-saved-theme-head { flex-direction: column; }
+  .obw-theme-status-actions { justify-content: flex-start; }
+}
+@media (max-width: 620px) {
+  .obw-theme-expanded { grid-template-columns: 1fr; }
+}
+
 </style>

@@ -50,6 +50,22 @@ export interface ObservationRelation {
 
 export type ThemeStatus = 'observing' | 'exploring' | 'paused'
 
+export type ThemeEventType =
+  | 'created'
+  | 'observation-added'
+  | 'status-changed'
+  | 'duplicate-merged'
+
+export interface ThemeEvent {
+  id: string
+  type: ThemeEventType
+  at: string
+  message: string
+  observationId?: number
+  previousStatus?: ThemeStatus
+  nextStatus?: ThemeStatus
+}
+
 export interface ProblemTheme {
   id: string
   title: string
@@ -58,6 +74,8 @@ export interface ProblemTheme {
   status: ThemeStatus
   createdAt: string
   updatedAt: string
+  /** 主题演进记录；旧版本地数据会在读取时自动补成空数组。 */
+  events: ThemeEvent[]
 }
 
 export interface ObservationWorkspaceState {
