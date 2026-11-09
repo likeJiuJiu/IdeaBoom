@@ -20,7 +20,11 @@ import {
 } from '../lib/observation-store'
 
 const props = defineProps<{ ideas: ObservationSource[] }>()
-const emit = defineEmits<{ create: [text: string] }>()
+const emit = defineEmits<{
+  create: [text: string]
+  'relations-change': [relations: Array<{ sourceId: number; targetId: number; type: ObservationRelation['type'] }>]
+  'themes-change': [themes: Array<{ id: string; title: string; observationIds: number[]; status: 'observing' | 'exploring' | 'paused' }>]
+}>()
 
 const isOpen = ref(false)
 const isComposerOpen = ref(false)
@@ -136,6 +140,27 @@ const confirmedRelatedIds = computed(() => {
 })
 
 const visibleThemes = computed(() => workspace.value.themes.slice(0, 5))
+
+// 把工作台已确认的关系同步给父级；建议态和已否定关系不会进入画布。
+const confirmedRelationsForCanvas = computed(() =>
+  workspace.value.relations
+    .filter((item) => item.status === 'confirmed')
+    .map((item) => ({ sourceId: item.sourceId, targetId: item.targetId, type: item.type })),
+)
+watch(confirmedRelationsForCanvas, (relations) => {
+  emit('relations-change', relations)
+}, { immediate: true })
+
+// 主题由用户在工作台中明确创建；只把主题成员和状态同步给星云引擎。
+const themesForCanvas = computed(() => workspace.value.themes.map((theme) => ({
+  id: theme.id,
+  title: theme.title,
+  observationIds: [...theme.observationIds],
+  status: theme.status,
+})))
+watch(themesForCanvas, (themes) => {
+  emit('themes-change', themes)
+}, { immediate: true })
 
 function persist(): void {
   saveObservationWorkspace(workspace.value)

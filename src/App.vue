@@ -287,6 +287,8 @@ let encounterTimer: number | undefined
 let closePairTimer: number | undefined
 let tickerTimer: number | undefined
 let activeResonanceKey: string | null = null
+const confirmedRelationBridge = ref<Array<{ sourceId: number; targetId: number; type: string }>>([])
+const problemThemeBridge = ref<Array<{ id: string; title: string; observationIds: number[]; status: 'observing' | 'exploring' | 'paused' }>>([])
 const bornTimers = new Map<number, number>()
 const activePointers = new Map<number, { x: number; y: number }>()
 let pinchDistance = 0
@@ -298,6 +300,16 @@ function localPoint(event: PointerEvent | WheelEvent) {
 function syncEngine() {
   engine?.setIdeas(ideas.value.map((idea) => ({ id: idea.id, x: idea.x, y: idea.y, color: idea.color })))
   engine?.refreshNodes()
+}
+
+function syncConfirmedObservationRelations(relations: Array<{ sourceId: number; targetId: number; type: string }>): void {
+  confirmedRelationBridge.value = relations
+  engine?.setConfirmedRelations(relations)
+}
+
+function syncProblemThemes(themes: Array<{ id: string; title: string; observationIds: number[]; status: 'observing' | 'exploring' | 'paused' }>): void {
+  problemThemeBridge.value = themes
+  engine?.setProblemThemes(themes)
 }
 function markBorn(id: number) {
   bornIds.value = [...bornIds.value, id]
@@ -689,6 +701,8 @@ onMounted(() => {
     engine.onZoomChange = (zoom) => { zoomLabel.value = Math.round(zoom * 100) }
     engine.onEncounterArrived = () => openResonanceDialog()
     syncEngine()
+    engine.setConfirmedRelations(confirmedRelationBridge.value)
+    engine.setProblemThemes(problemThemeBridge.value)
     engine.setMotionEnabled(motionEnabled.value)
     engine.start()
   }
@@ -946,6 +960,8 @@ onBeforeUnmount(() => {
     <ObservationWorkspace
   :ideas="ideas"
   @create="addObservationFromWorkspace"
+  @relations-change="syncConfirmedObservationRelations"
+  @themes-change="syncProblemThemes"
 />
   </main>
 </template>

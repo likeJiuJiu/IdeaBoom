@@ -15,6 +15,21 @@ export interface NebulaIdea {
   color: string
 }
 
+/** 只承载用户已确认的观察关系；画布不负责判断语义。 */
+export interface NebulaRelation {
+  sourceId: number
+  targetId: number
+  type: string
+}
+
+/** 用户手动整理的问题主题；仅用于画布呈现，不承载业务存储。 */
+export interface NebulaTheme {
+  id: string
+  title: string
+  observationIds: number[]
+  status: 'observing' | 'exploring' | 'paused'
+}
+
 interface Star {
   x: number
   y: number
@@ -197,6 +212,8 @@ export class NebulaEngine {
   private cloudSprites: { canvas: HTMLCanvasElement; x: number; y: number; driftX: number; driftY: number; phase: number }[] = []
 
   private ideas: NebulaIdea[] = []
+  private confirmedRelations: NebulaRelation[] = []
+  private problemThemes: NebulaTheme[] = []
   private nodeEls = new Map<number, HTMLElement>()
   private offsets = new Map<number, NodeOffset>()
   private focusId: number | null = null
@@ -271,7 +288,38 @@ export class NebulaEngine {
 
   setIdeas(ideas: NebulaIdea[]): void {
     this.ideas = ideas
+    const validIds = new Set(ideas.map((idea) => idea.id))
+    this.confirmedRelations = this.confirmedRelations.filter(
+      (relation) => validIds.has(relation.sourceId) && validIds.has(relation.targetId),
+    )
     this.refreshNodes()
+  }
+
+  /** 接收观察工作台已保存的问题主题；少于两条有效观察的主题不绘制。 */
+  setProblemThemes(themes: NebulaTheme[]): void {
+    const validIds = new Set(this.ideas.map((idea) => idea.id))
+    this.problemThemes = themes
+      .map((theme) => ({
+        ...theme,
+        observationIds: [...new Set(theme.observationIds.filter((id) => validIds.has(id)))],
+      }))
+      .filter((theme) => theme.title.trim().length > 0 && theme.observationIds.length >= 2)
+    this.start()
+  }
+  /** 接收工作台已确认的关系；建议态和已否定关系不会进入画布。 */
+  setConfirmedRelations(relations: NebulaRelation[]): void {
+    const validIds = new Set(this.ideas.map((idea) => idea.id))
+    const seen = new Set<string>()
+    this.confirmedRelations = relations.filter((relation) => {
+      if (relation.sourceId === relation.targetId) return false
+      if (!validIds.has(relation.sourceId) || !validIds.has(relation.targetId)) return false
+      const key = [relation.sourceId, relation.targetId].sort((a, b) => a - b).join(':')
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+    // 关系更新后立即刷新；动效暂停时也会绘制一帧静态关系。
+    this.start()
   }
 
   /** 想法列表变化后同步 DOM 引用，引擎需要写光点的引力偏移变量 */
@@ -1018,36 +1066,165 @@ export class NebulaEngine {
 
   private drawWorld(ctx: CanvasRenderingContext2D): void {
     this.useCamera(ctx, 1)
-    const zoom = this.cam.zoom
-    const focus = this.focusId
-
-    // 想法之间若有若无的连线：靠近才出现，不做语义判断
-    const linkLimit = 285
-    for (let i = 0; i < this.ideas.length; i += 1) {
-      const a = this.ideas[i]
-      const pa = this.worldOf(a)
-      for (let j = i + 1; j < this.ideas.length; j += 1) {
-        const b = this.ideas[j]
-        const pb = this.worldOf(b)
-        const d = Math.hypot(pb.x - pa.x, pb.y - pa.y)
-        if (d > linkLimit) continue
-        const faded = focus !== null && a.id !== focus && b.id !== focus
-        const alpha = (1 - d / linkLimit) ** 1.7 * (faded ? 0.04 : 0.16)
-        ctx.strokeStyle = `rgba(158, 150, 255, ${alpha})`
-        ctx.lineWidth = 0.7 / zoom
-        ctx.beginPath()
-        ctx.moveTo(pa.x, pa.y)
-        ctx.lineTo(pb.x, pb.y)
-        ctx.stroke()
-      }
-    }
-
+    this.drawProblemThemes(ctx)
+    this.drawConfirmedRelations(ctx)
     this.drawGuide(ctx)
     this.drawRipples(ctx)
     this.drawSparks(ctx)
     this.drawComets(ctx)
   }
 
+  /**
+   * 将用户整理的问题主题绘制为柔和星群区域。
+   * 主题来自用户确认的观察集合，不会因为空间距离或文本相似自动生成。
+   */
+  private drawProblemThemes(ctx: CanvasRenderingContext2D): void {
+    if (this.problemThemes.length === 0) return
+    const zoom = Math.max(0.01, this.cam.zoom)
+    const ideaMap = new Map<number, NebulaIdea>()
+    for (const idea of this.ideas) ideaMap.set(idea.id, idea)
+    const palette: Record<NebulaTheme['status'], string> = {
+      observing: '#A99AFF',
+      exploring: '#77E8D8',
+      paused: '#9AA0BD',
+    }
+    for (const theme of this.problemThemes.slice(0, 10)) {
+      const members = theme.observationIds
+        .map((id) => ideaMap.get(id))
+        .filter((idea): idea is NebulaIdea => Boolean(idea))
+      if (members.length < 2) continue
+      const points = members.map((idea) => {
+        const base = this.worldOf(idea)
+        const offset = this.offsets.get(idea.id)
+        return { x: base.x + (offset?.x ?? 0), y: base.y + (offset?.y ?? 0) }
+      })
+      const xs = points.map((point) => point.x)
+      const ys = points.map((point) => point.y)
+      const minX = Math.min(...xs)
+      const maxX = Math.max(...xs)
+      const minY = Math.min(...ys)
+      const maxY = Math.max(...ys)
+      const centerX = (minX + maxX) / 2
+      const centerY = (minY + maxY) / 2
+      const radiusX = Math.max(116, (maxX - minX) / 2 + 84)
+      const radiusY = Math.max(88, (maxY - minY) / 2 + 64)
+      const hasFocus = this.focusId === null || members.some((idea) => idea.id === this.focusId)
+      const alpha = this.focusId === null ? 0.9 : hasFocus ? 1 : 0.16
+      const color = palette[theme.status] ?? palette.observing
+      ctx.save()
+      ctx.globalAlpha = alpha
+      ctx.shadowColor = withAlpha(color, 0.34)
+      ctx.shadowBlur = (34 + Math.min(24, members.length * 3)) / zoom
+      const gradient = ctx.createRadialGradient(centerX, centerY, 8 / zoom, centerX, centerY, Math.max(radiusX, radiusY))
+      gradient.addColorStop(0, withAlpha(color, 0.105))
+      gradient.addColorStop(0.62, withAlpha(color, 0.052))
+      gradient.addColorStop(1, withAlpha(color, 0.008))
+      ctx.fillStyle = gradient
+      ctx.beginPath()
+      ctx.ellipse(centerX, centerY, radiusX, radiusY, 0, 0, TAU)
+      ctx.fill()
+      ctx.shadowBlur = 0
+      ctx.strokeStyle = withAlpha(color, hasFocus ? 0.26 : 0.08)
+      ctx.lineWidth = 1.05 / zoom
+      ctx.setLineDash([12 / zoom, 15 / zoom])
+      ctx.beginPath()
+      ctx.ellipse(centerX, centerY, radiusX, radiusY, 0, 0, TAU)
+      ctx.stroke()
+      ctx.setLineDash([])
+      // 主题标签保持接近屏幕固定尺寸，缩放时不至于过大或过小。
+      const titleChars = [...theme.title.trim()]
+      const label = titleChars.length > 18 ? `${titleChars.slice(0, 18).join('')}…` : titleChars.join('')
+      ctx.font = `600 ${12 / zoom}px "Microsoft YaHei", "PingFang SC", sans-serif`
+      ctx.textBaseline = 'middle'
+      const labelWidth = ctx.measureText(label).width + 22 / zoom
+      const labelHeight = 25 / zoom
+      const labelX = centerX - labelWidth / 2
+      const labelY = centerY - radiusY - labelHeight - 10 / zoom
+      ctx.fillStyle = withAlpha(color, 0.16)
+      ctx.strokeStyle = withAlpha(color, 0.34)
+      ctx.lineWidth = 1 / zoom
+      ctx.beginPath()
+      ctx.rect(labelX, labelY, labelWidth, labelHeight)
+      ctx.fill()
+      ctx.stroke()
+      ctx.fillStyle = withAlpha(color, hasFocus ? 0.96 : 0.58)
+      ctx.fillText(label, labelX + 11 / zoom, labelY + labelHeight / 2)
+      ctx.restore()
+    }
+  }
+  /** 只绘制用户确认的关系；空间距离不再被误认为语义联系。 */
+  private drawConfirmedRelations(ctx: CanvasRenderingContext2D): void {
+    if (this.confirmedRelations.length === 0) return
+    const zoom = Math.max(0.01, this.cam.zoom)
+    const focus = this.focusId
+    const ideaMap = new Map<number, NebulaIdea>()
+    for (const idea of this.ideas) ideaMap.set(idea.id, idea)
+    const palette: Record<string, { line: string; glow: string }> = {
+      'same-scene': { line: 'rgba(205, 184, 255, 0.94)', glow: 'rgba(172, 145, 255, 0.40)' },
+      'shared-friction': { line: 'rgba(126, 224, 255, 0.94)', glow: 'rgba(105, 213, 255, 0.40)' },
+      'cross-scene': { line: 'rgba(139, 239, 211, 0.94)', glow: 'rgba(115, 228, 197, 0.38)' },
+      'possible-contradiction': { line: 'rgba(255, 202, 145, 0.96)', glow: 'rgba(255, 179, 112, 0.40)' },
+      other: { line: 'rgba(189, 192, 255, 0.88)', glow: 'rgba(163, 169, 255, 0.32)' },
+    }
+    for (const relation of this.confirmedRelations) {
+      const source = ideaMap.get(relation.sourceId)
+      const target = ideaMap.get(relation.targetId)
+      if (!source || !target) continue
+      const sourceOffset = this.offsets.get(source.id)
+      const targetOffset = this.offsets.get(target.id)
+      const sourceBase = this.worldOf(source)
+      const targetBase = this.worldOf(target)
+      const ax = sourceBase.x + (sourceOffset?.x ?? 0)
+      const ay = sourceBase.y + (sourceOffset?.y ?? 0)
+      const bx = targetBase.x + (targetOffset?.x ?? 0)
+      const by = targetBase.y + (targetOffset?.y ?? 0)
+      const dx = bx - ax
+      const dy = by - ay
+      const distance = Math.max(1, Math.hypot(dx, dy))
+      const bendDirection = (relation.sourceId + relation.targetId) % 2 === 0 ? 1 : -1
+      const bend = Math.min(64, Math.max(22, distance * 0.075)) * bendDirection
+      const cx = (ax + bx) / 2 - (dy / distance) * bend
+      const cy = (ay + by) / 2 + (dx / distance) * bend
+      const highlighted = focus === null || source.id === focus || target.id === focus
+      const alpha = focus === null ? 0.72 : highlighted ? 1 : 0.12
+      const colors = palette[relation.type] ?? palette.other
+      ctx.save()
+      ctx.globalAlpha = alpha
+      ctx.lineCap = 'round'
+      ctx.lineJoin = 'round'
+      ctx.shadowColor = colors.glow
+      ctx.shadowBlur = (highlighted ? 18 : 8) / zoom
+      ctx.strokeStyle = colors.glow
+      ctx.lineWidth = (highlighted ? 4 : 2.2) / zoom
+      ctx.beginPath()
+      ctx.moveTo(ax, ay)
+      ctx.quadraticCurveTo(cx, cy, bx, by)
+      ctx.stroke()
+      ctx.shadowBlur = (highlighted ? 10 : 4) / zoom
+      ctx.strokeStyle = colors.line
+      ctx.lineWidth = (highlighted ? 1.35 : 0.85) / zoom
+      ctx.setLineDash([8 / zoom, 11 / zoom])
+      ctx.lineDashOffset = this.motion ? -this.time * 0.004 : 0
+      ctx.beginPath()
+      ctx.moveTo(ax, ay)
+      ctx.quadraticCurveTo(cx, cy, bx, by)
+      ctx.stroke()
+      ctx.setLineDash([])
+      const phase = ((relation.sourceId * 31 + relation.targetId * 17) % 100) / 100
+      const t = this.motion ? (this.time * 0.000045 + phase) % 1 : 0.5
+      const inverse = 1 - t
+      const px = inverse * inverse * ax + 2 * inverse * t * cx + t * t * bx
+      const py = inverse * inverse * ay + 2 * inverse * t * cy + t * t * by
+      const dotSize = (highlighted ? 3.4 : 2.4) / zoom
+      ctx.shadowColor = colors.line
+      ctx.shadowBlur = (highlighted ? 13 : 6) / zoom
+      ctx.fillStyle = colors.line
+      ctx.beginPath()
+      ctx.arc(px, py, dotSize, 0, TAU)
+      ctx.fill()
+      ctx.restore()
+    }
+  }
   private drawGuide(ctx: CanvasRenderingContext2D): void {
     const guide = this.guide
     if (!guide) return
